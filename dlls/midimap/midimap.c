@@ -2,6 +2,7 @@
  * Wine MIDI mapper driver
  *
  * Copyright 	1999, 2000, 2001 Eric Pouech
+ * Copyright    2004 Junyu Long
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -32,6 +33,26 @@
 #include "mmddk.h"
 #include "winreg.h"
 #include "wine/debug.h"
+#include "winsock2.h"
+
+#define SERVER_PORT 7941
+#define CLIENT_PORT 7942
+#define CLIENT_IP "127.0.0.1"
+#define BUFFER_SIZE 9
+
+#define REQUEST_CODE_MIDI_SHORT 1
+#define REQUEST_CODE_MIDI_LONG 2
+
+static struct sockaddr_in* client_addr = NULL;
+static SOCKET server_sock = INVALID_SOCKET;
+static BOOL winsock_loaded = FALSE;
+static BYTE* send_buffer;
+
+static void close_server_socket(void);
+static BOOL create_server_socket(void);
+static void request_midi_data(char*);
+static void request_midi_short(DWORD_PTR);
+static void request_midi_long(LPMIDIHDR);
 
 /*
  * Here's how Windows stores the midiOut mapping information.
@@ -104,6 +125,10 @@ typedef	struct tagMIDIMAPDATA
     BYTE		runningStatus;
     WORD		wCbFlags;
 } MIDIMAPDATA;
+
+static MIDIOUTPORT winlatorMidiOutPort = {
+    
+};
 
 static	MIDIOUTPORT*	midiOutPorts;
 static  unsigned	numMidiOutPorts;
@@ -285,188 +310,165 @@ static void MIDIMAP_NotifyClient(MIDIMAPDATA* mom, WORD wMsg,
 
 static DWORD modOpen(DWORD_PTR *lpdwUser, LPMIDIOPENDESC lpDesc, DWORD dwFlags)
 {
-    MIDIMAPDATA*	mom = HeapAlloc(GetProcessHeap(), 0, sizeof(MIDIMAPDATA));
+    MIDIMAPDATA* mom = HeapAlloc(GetProcessHeap(), 0, sizeof(MIDIMAPDATA));
 
     TRACE("(%p %p %08lx)\n", lpdwUser, lpDesc, dwFlags);
 
-    if (!mom) return MMSYSERR_NOMEM;
+    if (!mom)
+        return MMSYSERR_NOMEM;
+
     if (!lpDesc) {
-	HeapFree(GetProcessHeap(), 0, mom);
-	return MMSYSERR_INVALPARAM;
+	    HeapFree(GetProcessHeap(), 0, mom);
+	    return MMSYSERR_INVALPARAM;
     }
 
-    if (MIDIMAP_LoadSettings(mom))
-    {
-	UINT chn;
-	*lpdwUser = (DWORD_PTR)mom;
-	mom->self = mom;
-	mom->wCbFlags = HIWORD(dwFlags & CALLBACK_TYPEMASK);
-	mom->midiDesc = *lpDesc;
-	mom->runningStatus = 0;
+    if (MIDIMAP_LoadSettings(mom)) {
+	    UINT chn;
+	    *lpdwUser = (DWORD_PTR)mom;
+	    mom->self = mom;
+	    mom->wCbFlags = HIWORD(dwFlags & CALLBACK_TYPEMASK);
+	    mom->midiDesc = *lpDesc;
+	    mom->runningStatus = 0;
 
-	for (chn = 0; chn < 16; chn++)
-	{
-	    if (mom->ChannelMap[chn]->loaded) continue;
-	    if (midiOutOpen(&mom->ChannelMap[chn]->hMidi, mom->ChannelMap[chn]->uDevID,
-			    0L, 0L, CALLBACK_NULL) == MMSYSERR_NOERROR)
-		mom->ChannelMap[chn]->loaded = 1;
-	    else
-		mom->ChannelMap[chn]->loaded = -1;
-	    /* FIXME: should load here the IDF midi data... and allow channel and
-	     * patch mappings
-	     */
-	}
-	MIDIMAP_NotifyClient(mom, MOM_OPEN, 0L, 0L);
-	return MMSYSERR_NOERROR;
+        for (chn = 0; chn < 16; chn++) {
+            if (mom->ChannelMap[chn]->loaded)
+                continue;
+            mom->ChannelMap[chn]->loaded = 1;
+            /* FIXME: should load here the IDF midi data... and allow channel and
+            * patch mappings
+            */
+        }
+
+        MIDIMAP_NotifyClient(mom, MOM_OPEN, 0L, 0L);
+        return MMSYSERR_NOERROR;
     }
+
     HeapFree(GetProcessHeap(), 0, mom);
     return MIDIERR_INVALIDSETUP;
 }
 
-static	DWORD	modClose(MIDIMAPDATA* mom)
+static DWORD modClose(MIDIMAPDATA* mom)
 {
-    UINT	i;
-    DWORD	ret = MMSYSERR_NOERROR;
+    UINT i;
 
-    if (MIDIMAP_IsBadData(mom)) 	return MMSYSERR_ERROR;
+    if (MIDIMAP_IsBadData(mom))
+        return MMSYSERR_ERROR;
 
-    for (i = 0; i < 16; i++)
-    {
-	DWORD	t;
-	if (mom->ChannelMap[i] && mom->ChannelMap[i]->loaded > 0)
-	{
-	    t = midiOutClose(mom->ChannelMap[i]->hMidi);
-	    if (t == MMSYSERR_NOERROR)
-	    {
-		mom->ChannelMap[i]->loaded = 0;
-		mom->ChannelMap[i]->hMidi = 0;
-	    }
-	    else if (ret == MMSYSERR_NOERROR)
-		ret = t;
-	}
+    for (i = 0; i < 16; i++) {
+	    DWORD t;
+
+        if (mom->ChannelMap[i] && mom->ChannelMap[i]->loaded > 0)  {
+                mom->ChannelMap[i]->loaded = 0;
+                mom->ChannelMap[i]->hMidi = 0;
+        }
     }
-    if (ret == MMSYSERR_NOERROR) {
-	MIDIMAP_NotifyClient(mom, MOM_CLOSE, 0L, 0L);
-	HeapFree(GetProcessHeap(), 0, mom);
-    }
-    return ret;
+
+    MIDIMAP_NotifyClient(mom, MOM_CLOSE, 0L, 0L);
+    HeapFree(GetProcessHeap(), 0, mom);
+
+    return MMSYSERR_NOERROR;
 }
 
 static DWORD modLongData(MIDIMAPDATA* mom, LPMIDIHDR lpMidiHdr, DWORD_PTR dwParam2)
 {
-    WORD	chn;
-    DWORD	ret = MMSYSERR_NOERROR;
+    WORD chn;
+    DWORD ret = MMSYSERR_NOERROR;
     MIDIHDR	mh;
 
     if (MIDIMAP_IsBadData(mom))
-	return MMSYSERR_ERROR;
+	    return MMSYSERR_ERROR;
+
     if (!(lpMidiHdr->dwFlags & MHDR_PREPARED))
-	return MIDIERR_UNPREPARED;
+	    return MIDIERR_UNPREPARED;
+
     if (lpMidiHdr->dwFlags & MHDR_INQUEUE)
-	return MIDIERR_STILLPLAYING;
+	    return MIDIERR_STILLPLAYING;
 
     mh = *lpMidiHdr;
     lpMidiHdr->dwFlags &= ~MHDR_DONE;
     lpMidiHdr->dwFlags |= MHDR_INQUEUE;
-    for (chn = 0; chn < 16; chn++)
-    {
-	if (mom->ChannelMap[chn] && mom->ChannelMap[chn]->loaded > 0)
-	{
-	    mh.dwFlags = 0;
-	    midiOutPrepareHeader(mom->ChannelMap[chn]->hMidi, &mh, sizeof(mh));
-	    ret = midiOutLongMsg(mom->ChannelMap[chn]->hMidi, &mh, sizeof(mh));
-	    /* As of 2009, wineXYZ.drv's LongData handlers are synchronous */
-	    if (!ret && !(mh.dwFlags & MHDR_DONE))
-		FIXME("wait until MHDR_DONE\n");
-	    midiOutUnprepareHeader(mom->ChannelMap[chn]->hMidi, &mh, sizeof(mh));
-	    if (ret != MMSYSERR_NOERROR) break;
-	}
-    }
+
+    request_midi_long(lpMidiHdr);
+
     mom->runningStatus = 0;
     lpMidiHdr->dwFlags &= ~MHDR_INQUEUE;
     lpMidiHdr->dwFlags |= MHDR_DONE;
+
     MIDIMAP_NotifyClient(mom, MOM_DONE, (DWORD_PTR)lpMidiHdr, 0L);
     return ret;
 }
 
 static DWORD modData(MIDIMAPDATA* mom, DWORD_PTR dwParam)
 {
-    BYTE	status = LOBYTE(LOWORD(dwParam));
-    WORD	chn;
-    DWORD	ret = MMSYSERR_NOERROR;
+    BYTE status = LOBYTE(LOWORD(dwParam));
+    WORD chn;
 
     if (MIDIMAP_IsBadData(mom))
-	return MMSYSERR_ERROR;
+	    return MMSYSERR_ERROR;
 
-    if (status < 0x80)
-    {
-        if (mom->runningStatus)
-        {
+    if (status < 0x80) {
+        if (mom->runningStatus) {
             status = mom->runningStatus;
             dwParam = ((LOWORD(dwParam) << 8) | status);
-        }
-        else
-        {
+        } else {
             FIXME("ooch %Ix\n", dwParam);
             return MMSYSERR_NOERROR;
         }
     }
     chn = status & 0x0F;
 
-    if (!mom->ChannelMap[chn]) return MMSYSERR_NOERROR;
+    if (!mom->ChannelMap[chn])
+        return MMSYSERR_NOERROR;
 
-    switch (status & 0xF0)
-    {
-    case 0x80:
-    case 0x90:
-    case 0xA0:
-    case 0xB0:
-    case 0xC0:
-    case 0xD0:
-    case 0xE0:
-	if (mom->ChannelMap[chn]->loaded > 0)
-	{
-	    /* change channel */
-	    dwParam &= ~0x0F;
-	    dwParam |= mom->ChannelMap[chn]->aChn[chn];
+    switch (status & 0xF0) {
+        case 0x80:
+        case 0x90:
+        case 0xA0:
+        case 0xB0:
+        case 0xC0:
+        case 0xD0:
+        case 0xE0:
+            if (mom->ChannelMap[chn]->loaded > 0)
+            {
+                /* change channel */
+                dwParam &= ~0x0F;
+                dwParam |= mom->ChannelMap[chn]->aChn[chn];
 
-	    if ((LOBYTE(LOWORD(dwParam)) & 0xF0) == 0xC0 /* program change */ &&
-		mom->ChannelMap[chn]->lpbPatch)
-	    {
-		BYTE patch = HIBYTE(LOWORD(dwParam));
+                if ((LOBYTE(LOWORD(dwParam)) & 0xF0) == 0xC0 /* program change */ &&
+                mom->ChannelMap[chn]->lpbPatch) {
+                    BYTE patch = HIBYTE(LOWORD(dwParam));
 
-		/* change patch */
-		dwParam &= ~0x0000FF00;
-		dwParam |= mom->ChannelMap[chn]->lpbPatch[patch];
-	    }
-	    ret = midiOutShortMsg(mom->ChannelMap[chn]->hMidi, dwParam);
-	}
-	mom->runningStatus = status;
-	break;
-    case 0xF0:
-	for (chn = 0; chn < 16; chn++)
-	{
-	    if (mom->ChannelMap[chn]->loaded > 0)
-		ret = midiOutShortMsg(mom->ChannelMap[chn]->hMidi, dwParam);
-	}
-	/* system common message */
-	if (status <= 0xF7)
-	    mom->runningStatus = 0;
-	break;
-    default:
-	FIXME("ooch %Ix\n", dwParam);
+                    /* change patch */
+                    dwParam &= ~0x0000FF00;
+                    dwParam |= mom->ChannelMap[chn]->lpbPatch[patch];
+                }
+                request_midi_short(dwParam);
+            }
+            mom->runningStatus = status;
+            break;
+        case 0xF0:
+            request_midi_short(dwParam);
+            /* system common message */
+            if (status <= 0xF7)
+                mom->runningStatus = 0;
+            break;
+        default:
+            FIXME("ooch %Ix\n", dwParam);
     }
 
-    return ret;
+    return MMSYSERR_NOERROR;
 }
 
 static DWORD modPrepare(MIDIMAPDATA* mom, LPMIDIHDR lpMidiHdr, DWORD_PTR dwSize)
 {
-    if (MIDIMAP_IsBadData(mom)) return MMSYSERR_ERROR;
+    if (MIDIMAP_IsBadData(mom))
+        return MMSYSERR_ERROR;
+
     if (dwSize < offsetof(MIDIHDR,dwOffset) || lpMidiHdr == 0 || lpMidiHdr->lpData == 0)
-	return MMSYSERR_INVALPARAM;
+	    return MMSYSERR_INVALPARAM;
+
     if (lpMidiHdr->dwFlags & MHDR_PREPARED)
-	return MMSYSERR_NOERROR;
+	    return MMSYSERR_NOERROR;
 
     lpMidiHdr->dwFlags |= MHDR_PREPARED;
     lpMidiHdr->dwFlags &= ~(MHDR_DONE|MHDR_INQUEUE); /* flags cleared since w2k */
@@ -475,13 +477,17 @@ static DWORD modPrepare(MIDIMAPDATA* mom, LPMIDIHDR lpMidiHdr, DWORD_PTR dwSize)
 
 static DWORD modUnprepare(MIDIMAPDATA* mom, LPMIDIHDR lpMidiHdr, DWORD_PTR dwSize)
 {
-    if (MIDIMAP_IsBadData(mom)) return MMSYSERR_ERROR;
+    if (MIDIMAP_IsBadData(mom))
+        return MMSYSERR_ERROR;
+
     if (dwSize < offsetof(MIDIHDR,dwOffset) || lpMidiHdr == 0 || lpMidiHdr->lpData == 0)
-	return MMSYSERR_INVALPARAM;
+	    return MMSYSERR_INVALPARAM;
+
     if (!(lpMidiHdr->dwFlags & MHDR_PREPARED))
-	return MMSYSERR_NOERROR;
+	    return MMSYSERR_NOERROR;
+
     if (lpMidiHdr->dwFlags & MHDR_INQUEUE)
-	return MIDIERR_STILLPLAYING;
+	    return MIDIERR_STILLPLAYING;
 
     lpMidiHdr->dwFlags &= ~MHDR_PREPARED;
     return MMSYSERR_NOERROR;
@@ -505,37 +511,97 @@ static DWORD modSetVolume(MIDIMAPDATA* mom, DWORD dwVolume)
 static DWORD modGetDevCaps(UINT wDevID, MIDIMAPDATA* mom, LPMIDIOUTCAPSW lpMidiCaps, DWORD_PTR size)
 {
     static const MIDIOUTCAPSW mappercaps = {
-	0x00FF, 0x0001, 0x0100, /* Manufacturer and Product ID */
+        0x00FF, 0x0001, 0x0100, /* Manufacturer and Product ID */
         L"Wine midi mapper", MOD_MAPPER, 0, 0, 0xFFFF,
-	/* Native returns volume caps of underlying device + MIDICAPS_STREAM */
-	MIDICAPS_VOLUME|MIDICAPS_LRVOLUME
+        MIDICAPS_VOLUME|MIDICAPS_LRVOLUME /* Native returns volume caps of underlying device + MIDICAPS_STREAM */
     };
-    if (lpMidiCaps == NULL) return MMSYSERR_INVALPARAM;
-    if (!numMidiOutPorts) return MMSYSERR_BADDEVICEID;
+
+    if (lpMidiCaps == NULL)
+        return MMSYSERR_INVALPARAM;
+
+    if (!numMidiOutPorts)
+        return MMSYSERR_BADDEVICEID;
 
     memcpy(lpMidiCaps, &mappercaps, min(size, sizeof(*lpMidiCaps)));
     return MMSYSERR_NOERROR;
 }
 
-static	DWORD	modReset(MIDIMAPDATA* mom)
+static DWORD modReset(MIDIMAPDATA* mom)
 {
-    WORD	chn;
-    DWORD	ret = MMSYSERR_NOERROR;
-
     if (MIDIMAP_IsBadData(mom))
-	return MMSYSERR_ERROR;
+	    return MMSYSERR_ERROR;
 
-    for (chn = 0; chn < 16; chn++)
-    {
-	if (mom->ChannelMap[chn] && mom->ChannelMap[chn]->loaded > 0)
-	{
-	    ret = midiOutReset(mom->ChannelMap[chn]->hMidi);
-	    if (ret != MMSYSERR_NOERROR) break;
-	}
-    }
     mom->runningStatus = 0;
 
-    return ret;
+    return MMSYSERR_NOERROR;
+}
+
+static BOOL create_server_socket(void)
+{
+    WSADATA wsa_data;
+    struct sockaddr_in server_addr;
+    const UINT reuse_addr = 1;
+    ULONG non_blocking = 1;
+    int res;
+
+    close_server_socket();
+
+    winsock_loaded = WSAStartup(MAKEWORD(2,2), &wsa_data) == NO_ERROR;
+    if (!winsock_loaded) return FALSE;
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    server_addr.sin_port = htons(SERVER_PORT);
+
+    server_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (server_sock == INVALID_SOCKET) return FALSE;
+
+    res = setsockopt(server_sock, SOL_SOCKET, SO_REUSEADDR, (const char *)&reuse_addr, sizeof(reuse_addr));
+    if (res == SOCKET_ERROR) return FALSE;
+
+    ioctlsocket(server_sock, FIONBIO, &non_blocking);
+
+    res = bind(server_sock, (struct sockaddr*)&server_addr, sizeof(server_addr));
+    if (res == SOCKET_ERROR) return FALSE;
+
+    return TRUE;
+}
+
+static void close_server_socket(void)
+{
+    if (server_sock != INVALID_SOCKET)
+    {
+        closesocket(server_sock);
+        server_sock = INVALID_SOCKET;
+    }
+
+    if (winsock_loaded)
+    {
+        WSACleanup();
+        winsock_loaded = FALSE;
+    }
+}
+
+static void request_midi_data(char* buffer) {
+    if (client_addr == NULL) {
+        client_addr = HeapAlloc(GetProcessHeap(), 0, sizeof(struct sockaddr_in));
+        client_addr->sin_family = AF_INET;
+        client_addr->sin_addr.s_addr = inet_addr(CLIENT_IP);
+        client_addr->sin_port = htons(CLIENT_PORT);
+    }
+
+    sendto(server_sock, buffer, BUFFER_SIZE, 0, (struct sockaddr*)client_addr, sizeof(struct sockaddr_in));
+}
+
+static void request_midi_short(DWORD_PTR param) {
+    send_buffer[0] = REQUEST_CODE_MIDI_SHORT;
+    memcpy(send_buffer + 1, &param, sizeof(DWORD_PTR));
+    request_midi_data(send_buffer);
+}
+
+static void request_midi_long(LPMIDIHDR param) {
+    // TODO: implement long msg
+    FIXME("long midi msg not supported yet!\n");
 }
 
 static LRESULT MIDIMAP_drvOpen(void);
@@ -561,21 +627,30 @@ DWORD WINAPI MIDIMAP_modMessage(UINT wDevID, UINT wMsg, DWORD_PTR dwUser,
 	/* FIXME: Pretend this is supported */
 	return 0;
 
-    case MODM_OPEN: return modOpen((DWORD_PTR *)dwUser, (LPMIDIOPENDESC)dwParam1, dwParam2);
-    case MODM_CLOSE:	 	return modClose		((MIDIMAPDATA*)dwUser);
-
-    case MODM_DATA:		return modData		((MIDIMAPDATA*)dwUser, dwParam1);
-    case MODM_LONGDATA:		return modLongData      ((MIDIMAPDATA*)dwUser, (LPMIDIHDR)dwParam1,     dwParam2);
-    case MODM_PREPARE:	 	return modPrepare	((MIDIMAPDATA*)dwUser, (LPMIDIHDR)dwParam1, 	dwParam2);
-    case MODM_UNPREPARE: 	return modUnprepare	((MIDIMAPDATA*)dwUser, (LPMIDIHDR)dwParam1, 	dwParam2);
-    case MODM_RESET:		return modReset		((MIDIMAPDATA*)dwUser);
-
-    case MODM_GETDEVCAPS:	return modGetDevCaps	(wDevID, (MIDIMAPDATA*)dwUser, (LPMIDIOUTCAPSW)dwParam1,dwParam2);
-    case MODM_GETNUMDEVS:	return 1;
-    case MODM_GETVOLUME:	return modGetVolume	((MIDIMAPDATA*)dwUser, (DWORD*)dwParam1);
-    case MODM_SETVOLUME:	return modSetVolume	((MIDIMAPDATA*)dwUser, dwParam1);
+    case MODM_OPEN:
+        return modOpen((DWORD_PTR *)dwUser, (LPMIDIOPENDESC)dwParam1, dwParam2);
+    case MODM_CLOSE:
+        return modClose((MIDIMAPDATA*)dwUser);
+    case MODM_DATA:
+        return modData((MIDIMAPDATA*)dwUser, dwParam1);
+    case MODM_LONGDATA:
+        return modLongData((MIDIMAPDATA*)dwUser, (LPMIDIHDR)dwParam1, dwParam2);
+    case MODM_PREPARE:
+        return modPrepare((MIDIMAPDATA*)dwUser, (LPMIDIHDR)dwParam1, dwParam2);
+    case MODM_UNPREPARE:
+        return modUnprepare((MIDIMAPDATA*)dwUser, (LPMIDIHDR)dwParam1, 	dwParam2);
+    case MODM_RESET:
+        return modReset((MIDIMAPDATA*)dwUser);
+    case MODM_GETDEVCAPS:
+        return modGetDevCaps(wDevID, (MIDIMAPDATA*)dwUser, (LPMIDIOUTCAPSW)dwParam1,dwParam2);
+    case MODM_GETNUMDEVS:
+        return 1;
+    case MODM_GETVOLUME:
+        return modGetVolume	((MIDIMAPDATA*)dwUser, (DWORD*)dwParam1);
+    case MODM_SETVOLUME:
+        return modSetVolume	((MIDIMAPDATA*)dwUser, dwParam1);
     default:
-	FIXME("unknown message %d!\n", wMsg);
+	    FIXME("unknown message %d!\n", wMsg);
     }
     return MMSYSERR_NOTSUPPORTED;
 }
@@ -589,39 +664,31 @@ DWORD WINAPI MIDIMAP_modMessage(UINT wDevID, UINT wMsg, DWORD_PTR dwUser,
  */
 static LRESULT MIDIMAP_drvOpen(void)
 {
-    MIDIOUTCAPSW	moc;
-    unsigned		dev, i;
-    BOOL                found_valid_port = FALSE;
+    MIDIOUTCAPSW moc;
+    unsigned dev, i;
+    BOOL found_valid_port = FALSE;
 
     if (midiOutPorts)
-	return 0;
+	    return 0;
 
-    numMidiOutPorts = midiOutGetNumDevs();
+    // we create a fake midi out port here.
+    numMidiOutPorts = 1;
     midiOutPorts = HeapAlloc(GetProcessHeap(), 0,
 			     numMidiOutPorts * sizeof(MIDIOUTPORT));
-    for (dev = 0; dev < numMidiOutPorts; dev++)
-    {
-	if (midiOutGetDevCapsW(dev, &moc, sizeof(moc)) == 0L)
-	{
-	    lstrcpyW(midiOutPorts[dev].name, moc.szPname);
-	    midiOutPorts[dev].loaded = 0;
-	    midiOutPorts[dev].hMidi = 0;
-	    midiOutPorts[dev].uDevID = dev;
-	    midiOutPorts[dev].lpbPatch = NULL;
-	    for (i = 0; i < 16; i++)
-		midiOutPorts[dev].aChn[i] = i;
-            if (wcsncmp(midiOutPorts[dev].name, L"Midi Through", lstrlenW(L"Midi Through")) != 0)
-	        found_valid_port = TRUE;
-	}
-	else
-	{
-	    midiOutPorts[dev].loaded = -1;
-	}
-    }
 
-    if (!found_valid_port)
-        ERR_(winediag)("No software synthesizer midi port found, Midi sound output probably won't work.\n");
+    MIDIOUTPORT* winlatorMidiOutPort = midiOutPorts;
+    lstrcpyW(winlatorMidiOutPort->name, L"Midi Through Winlator");
+    winlatorMidiOutPort->loaded = 0;
+    winlatorMidiOutPort->hMidi = 0;
+    winlatorMidiOutPort->uDevID = 0;
+    winlatorMidiOutPort->lpbPatch = NULL;
+    for (i = 0; i < 16; i++)
+		winlatorMidiOutPort->aChn[i] = i;
+    found_valid_port = TRUE;
 
+    // start socket server
+    create_server_socket();
+    send_buffer = HeapAlloc(GetProcessHeap(), 0, BUFFER_SIZE * sizeof(BYTE));
     return 1;
 }
 
@@ -630,12 +697,16 @@ static LRESULT MIDIMAP_drvOpen(void)
  */
 static LRESULT MIDIMAP_drvClose(void)
 {
-    if (midiOutPorts)
-    {
-	HeapFree(GetProcessHeap(), 0, midiOutPorts);
-	midiOutPorts = NULL;
-	return 1;
+    if (midiOutPorts) {
+	    HeapFree(GetProcessHeap(), 0, midiOutPorts);
+	    midiOutPorts = NULL;
+	    return 1;
     }
+
+    // close socket server
+    close_server_socket();
+    HeapFree(GetProcessHeap(), 0, client_addr);
+    HeapFree(GetProcessHeap(), 0, send_buffer);
     return 0;
 }
 
@@ -645,8 +716,8 @@ static LRESULT MIDIMAP_drvClose(void)
 LRESULT CALLBACK MIDIMAP_DriverProc(DWORD_PTR dwDevID, HDRVR hDriv, UINT wMsg,
                                     LPARAM dwParam1, LPARAM dwParam2)
 {
-/* EPP     TRACE("(%08lX, %04X, %08lX, %08lX, %08lX)\n",  */
-/* EPP 	  dwDevID, hDriv, wMsg, dwParam1, dwParam2); */
+    TRACE("(%08lX, %04X, %08lX, %08lX, %08lX)\n",
+        dwDevID, hDriv, wMsg, dwParam1, dwParam2);
 
     switch (wMsg)
     {
