@@ -55,14 +55,14 @@ static BYTE* send_buffer;
 
 static void close_server_socket(void);
 static BOOL create_server_socket(void);
-static void request_midi_data(char*);
+static void request_midi_data(BYTE*);
 static void request_midi_short(DWORD_PTR);
 static void request_midi_long(LPMIDIHDR);
-static void request_midi_prepare();
-static void request_midi_unprepare();
-static void request_midi_open();
-static void request_midi_close();
-static void request_midi_reset();
+static void request_midi_prepare(void);
+static void request_midi_unprepare(void);
+static void request_midi_open(void);
+static void request_midi_close(void);
+static void request_midi_reset(void);
 
 /*
  * Here's how Windows stores the midiOut mapping information.
@@ -362,8 +362,6 @@ static DWORD modClose(MIDIMAPDATA* mom)
         return MMSYSERR_ERROR;
 
     for (i = 0; i < 16; i++) {
-	    DWORD t;
-
         if (mom->ChannelMap[i] && mom->ChannelMap[i]->loaded > 0)  {
                 mom->ChannelMap[i]->loaded = 0;
                 mom->ChannelMap[i]->hMidi = 0;
@@ -378,9 +376,7 @@ static DWORD modClose(MIDIMAPDATA* mom)
 
 static DWORD modLongData(MIDIMAPDATA* mom, LPMIDIHDR lpMidiHdr, DWORD_PTR dwParam2)
 {
-    WORD chn;
     DWORD ret = MMSYSERR_NOERROR;
-    MIDIHDR	mh;
 
     if (MIDIMAP_IsBadData(mom))
 	    return MMSYSERR_ERROR;
@@ -391,7 +387,6 @@ static DWORD modLongData(MIDIMAPDATA* mom, LPMIDIHDR lpMidiHdr, DWORD_PTR dwPara
     if (lpMidiHdr->dwFlags & MHDR_INQUEUE)
 	    return MIDIERR_STILLPLAYING;
 
-    mh = *lpMidiHdr;
     lpMidiHdr->dwFlags &= ~MHDR_DONE;
     lpMidiHdr->dwFlags |= MHDR_INQUEUE;
 
@@ -595,7 +590,7 @@ static void close_server_socket(void)
     }
 }
 
-static void request_midi_data(char* buffer) {
+static void request_midi_data(BYTE* buffer) {
     if (client_addr == NULL) {
         client_addr = HeapAlloc(GetProcessHeap(), 0, sizeof(struct sockaddr_in));
         client_addr->sin_family = AF_INET;
@@ -603,7 +598,7 @@ static void request_midi_data(char* buffer) {
         client_addr->sin_port = htons(CLIENT_PORT);
     }
 
-    sendto(server_sock, buffer, BUFFER_SIZE, 0, (struct sockaddr*)client_addr, sizeof(struct sockaddr_in));
+    sendto(server_sock, (const void*) buffer, BUFFER_SIZE, 0, (struct sockaddr*)client_addr, sizeof(struct sockaddr_in));
 }
 
 static void request_midi_short(DWORD_PTR param) {
@@ -617,27 +612,27 @@ static void request_midi_long(LPMIDIHDR param) {
     FIXME("long midi msg not supported yet!\n");
 }
 
-static void request_midi_prepare() {
+static void request_midi_prepare(void) {
     send_buffer[0] = REQUEST_CODE_MIDI_PREPARE;
     request_midi_data(send_buffer);
 }
 
-static void request_midi_unprepare() {
+static void request_midi_unprepare(void) {
     send_buffer[0] = REQUEST_CODE_MIDI_UNPREPARE;
     request_midi_data(send_buffer);
 }
 
-static void request_midi_open() {
+static void request_midi_open(void) {
     send_buffer[0] = REQUEST_CODE_MIDI_OPEN;
     request_midi_data(send_buffer);
 }
 
-static void request_midi_close() {
+static void request_midi_close(void) {
     send_buffer[0] = REQUEST_CODE_MIDI_CLOSE;
     request_midi_data(send_buffer);
 }
 
-static void request_midi_reset() {
+static void request_midi_reset(void) {
     send_buffer[0] = REQUEST_CODE_MIDI_RESET;
     request_midi_data(send_buffer);
 }
@@ -702,9 +697,8 @@ DWORD WINAPI MIDIMAP_modMessage(UINT wDevID, UINT wMsg, DWORD_PTR dwUser,
  */
 static LRESULT MIDIMAP_drvOpen(void)
 {
-    MIDIOUTCAPSW moc;
-    unsigned dev, i;
-    BOOL found_valid_port = FALSE;
+    unsigned i;
+    MIDIOUTPORT* winlatorMidiOutPort;
 
     if (midiOutPorts)
 	    return 0;
@@ -714,7 +708,7 @@ static LRESULT MIDIMAP_drvOpen(void)
     midiOutPorts = HeapAlloc(GetProcessHeap(), 0,
 			     numMidiOutPorts * sizeof(MIDIOUTPORT));
 
-    MIDIOUTPORT* winlatorMidiOutPort = midiOutPorts;
+    winlatorMidiOutPort = midiOutPorts;
     lstrcpyW(winlatorMidiOutPort->name, L"Midi Through Winlator");
     winlatorMidiOutPort->loaded = 0;
     winlatorMidiOutPort->hMidi = 0;
@@ -722,7 +716,6 @@ static LRESULT MIDIMAP_drvOpen(void)
     winlatorMidiOutPort->lpbPatch = NULL;
     for (i = 0; i < 16; i++)
 		winlatorMidiOutPort->aChn[i] = i;
-    found_valid_port = TRUE;
 
     // start socket server
     create_server_socket();
