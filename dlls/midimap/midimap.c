@@ -2,7 +2,7 @@
  * Wine MIDI mapper driver
  *
  * Copyright 	1999, 2000, 2001 Eric Pouech
- * Copyright    2004 Junyu Long
+ * Copyright    2024 Junyu Long
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -42,6 +42,11 @@
 
 #define REQUEST_CODE_MIDI_SHORT 1
 #define REQUEST_CODE_MIDI_LONG 2
+#define REQUEST_CODE_MIDI_PREPARE 3
+#define REQUEST_CODE_MIDI_UNPREPARE 4
+#define REQUEST_CODE_MIDI_OPEN 5
+#define REQUEST_CODE_MIDI_CLOSE 6
+#define REQUEST_CODE_MIDI_RESET 7
 
 static struct sockaddr_in* client_addr = NULL;
 static SOCKET server_sock = INVALID_SOCKET;
@@ -53,6 +58,11 @@ static BOOL create_server_socket(void);
 static void request_midi_data(char*);
 static void request_midi_short(DWORD_PTR);
 static void request_midi_long(LPMIDIHDR);
+static void request_midi_prepare();
+static void request_midi_unprepare();
+static void request_midi_open();
+static void request_midi_close();
+static void request_midi_reset();
 
 /*
  * Here's how Windows stores the midiOut mapping information.
@@ -125,10 +135,6 @@ typedef	struct tagMIDIMAPDATA
     BYTE		runningStatus;
     WORD		wCbFlags;
 } MIDIMAPDATA;
-
-static MIDIOUTPORT winlatorMidiOutPort = {
-    
-};
 
 static	MIDIOUTPORT*	midiOutPorts;
 static  unsigned	numMidiOutPorts;
@@ -340,6 +346,7 @@ static DWORD modOpen(DWORD_PTR *lpdwUser, LPMIDIOPENDESC lpDesc, DWORD dwFlags)
         }
 
         MIDIMAP_NotifyClient(mom, MOM_OPEN, 0L, 0L);
+        request_midi_open();
         return MMSYSERR_NOERROR;
     }
 
@@ -365,7 +372,7 @@ static DWORD modClose(MIDIMAPDATA* mom)
 
     MIDIMAP_NotifyClient(mom, MOM_CLOSE, 0L, 0L);
     HeapFree(GetProcessHeap(), 0, mom);
-
+    request_midi_close();
     return MMSYSERR_NOERROR;
 }
 
@@ -467,11 +474,14 @@ static DWORD modPrepare(MIDIMAPDATA* mom, LPMIDIHDR lpMidiHdr, DWORD_PTR dwSize)
     if (dwSize < offsetof(MIDIHDR,dwOffset) || lpMidiHdr == 0 || lpMidiHdr->lpData == 0)
 	    return MMSYSERR_INVALPARAM;
 
+    request_midi_prepare();
+
     if (lpMidiHdr->dwFlags & MHDR_PREPARED)
-	    return MMSYSERR_NOERROR;
+        return MMSYSERR_NOERROR;
 
     lpMidiHdr->dwFlags |= MHDR_PREPARED;
     lpMidiHdr->dwFlags &= ~(MHDR_DONE|MHDR_INQUEUE); /* flags cleared since w2k */
+    
     return MMSYSERR_NOERROR;
 }
 
@@ -482,6 +492,8 @@ static DWORD modUnprepare(MIDIMAPDATA* mom, LPMIDIHDR lpMidiHdr, DWORD_PTR dwSiz
 
     if (dwSize < offsetof(MIDIHDR,dwOffset) || lpMidiHdr == 0 || lpMidiHdr->lpData == 0)
 	    return MMSYSERR_INVALPARAM;
+
+    request_midi_unprepare();
 
     if (!(lpMidiHdr->dwFlags & MHDR_PREPARED))
 	    return MMSYSERR_NOERROR;
@@ -532,6 +544,7 @@ static DWORD modReset(MIDIMAPDATA* mom)
 	    return MMSYSERR_ERROR;
 
     mom->runningStatus = 0;
+    request_midi_reset();
 
     return MMSYSERR_NOERROR;
 }
@@ -602,6 +615,31 @@ static void request_midi_short(DWORD_PTR param) {
 static void request_midi_long(LPMIDIHDR param) {
     // TODO: implement long msg
     FIXME("long midi msg not supported yet!\n");
+}
+
+static void request_midi_prepare() {
+    send_buffer[0] = REQUEST_CODE_MIDI_PREPARE;
+    request_midi_data(send_buffer);
+}
+
+static void request_midi_unprepare() {
+    send_buffer[0] = REQUEST_CODE_MIDI_UNPREPARE;
+    request_midi_data(send_buffer);
+}
+
+static void request_midi_open() {
+    send_buffer[0] = REQUEST_CODE_MIDI_OPEN;
+    request_midi_data(send_buffer);
+}
+
+static void request_midi_close() {
+    send_buffer[0] = REQUEST_CODE_MIDI_CLOSE;
+    request_midi_data(send_buffer);
+}
+
+static void request_midi_reset() {
+    send_buffer[0] = REQUEST_CODE_MIDI_RESET;
+    request_midi_data(send_buffer);
 }
 
 static LRESULT MIDIMAP_drvOpen(void);
