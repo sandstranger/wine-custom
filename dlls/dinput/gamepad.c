@@ -47,8 +47,14 @@ WINE_DEFAULT_DEBUG_CHANNEL(dinput);
 #define REQUEST_CODE_GET_GAMEPAD_STATE 9
 #define REQUEST_CODE_RELEASE_GAMEPAD 10
 
-#define MAPPER_TYPE_STANDARD 0
-#define MAPPER_TYPE_XINPUT 1
+#define FLAG_DINPUT_MAPPER_STANDARD 0x01
+#define FLAG_DINPUT_MAPPER_XINPUT 0x02
+#define FLAG_INPUT_TYPE_XINPUT 0x04
+#define FLAG_INPUT_TYPE_DINPUT 0x08
+
+#define LAUNCH_TYPE_XINPUTONLY 0
+#define LAUNCH_TYPE_DINPUTONLY 1
+#define LAUNCH_TYPE_MIXED 2
 
 #define IDX_BUTTON_A 0
 #define IDX_BUTTON_B 1
@@ -70,7 +76,9 @@ struct gamepad_state
     short thumb_lx;
     short thumb_ly;
     short thumb_rx;
-    short thumb_ry;    
+    short thumb_ry;
+    unsigned char thumb_lz;
+    unsigned char thumb_rz;    
 };
 
 struct gamepad
@@ -83,7 +91,7 @@ static const struct dinput_device_vtbl gamepad_vtbl;
 static SOCKET server_sock = INVALID_SOCKET;
 static BOOL winsock_loaded = FALSE;
 static int connected_gamepad_id = 0;
-static char mapper_type = MAPPER_TYPE_XINPUT;
+static char input_type = FLAG_DINPUT_MAPPER_XINPUT;
 
 static inline struct gamepad *impl_from_IDirectInputDevice8W( IDirectInputDevice8W *iface )
 {
@@ -142,6 +150,7 @@ static BOOL get_gamepad_request( BOOL notify, char* gamepad_name )
     int res, gamepad_id;
     char buffer[BUFFER_SIZE];
     struct sockaddr_in client_addr;
+    unsigned char launchType;
     
     client_addr.sin_family = AF_INET;
     client_addr.sin_addr.s_addr = inet_addr( "127.0.0.1" );
@@ -164,7 +173,11 @@ static BOOL get_gamepad_request( BOOL notify, char* gamepad_name )
     }
     
     connected_gamepad_id = gamepad_id;
-    mapper_type = buffer[5];
+    input_type = buffer[5];
+    if (!(input_type & FLAG_INPUT_TYPE_DINPUT)) {
+        gamepad_id = 0;
+        return FALSE;
+    }
     
     if (gamepad_name != NULL) 
     {
@@ -220,7 +233,7 @@ static LONG scale_axis_value( LONG value, struct object_properties *properties )
     return phy_min + MulDiv( value - log_min, phy_max - phy_min, log_max - log_min );
 }
 
-static void gamepad_handle_input( IDirectInputDevice8W *iface, short thumb_lx, short thumb_ly, short thumb_rx, short thumb_ry, short buttons, char dpad ) 
+static void gamepad_handle_input( IDirectInputDevice8W *iface, short thumb_lx, short thumb_ly, short thumb_rx, short thumb_ry, unsigned char thumb_lz, unsigned char thumb_rz, short buttons, char dpad ) 
 {
     int i, j, index;
     DWORD time, seq;
@@ -231,7 +244,7 @@ static void gamepad_handle_input( IDirectInputDevice8W *iface, short thumb_lx, s
     time = GetCurrentTime();
     seq = impl->base.dinput->evsequence++;    
     
-    if (mapper_type == MAPPER_TYPE_STANDARD) 
+    if (input_type & FLAG_DINPUT_MAPPER_STANDARD) 
     {
         if (thumb_lx != impl->state.thumb_lx)
         {
@@ -306,7 +319,7 @@ static void gamepad_handle_input( IDirectInputDevice8W *iface, short thumb_lx, s
             notify = TRUE;
         }        
     }
-    else if (mapper_type == MAPPER_TYPE_XINPUT) 
+    else if (input_type & FLAG_DINPUT_MAPPER_XINPUT) 
     {
         if (thumb_lx != impl->state.thumb_lx) 
         {
@@ -344,6 +357,25 @@ static void gamepad_handle_input( IDirectInputDevice8W *iface, short thumb_lx, s
             notify = TRUE;
         }
         
+        if (thumb_lz != impl->state.thumb_lz)
+        {
+            impl->state.thumb_lz = thumb_lz;
+            index = dinput_device_object_index_from_id( iface, DIDFT_ABSAXIS | DIDFT_MAKEINSTANCE( 2 ) );
+            state->lZ = scale_value( (LONG)(((double)thumb_lz / 255) * 32767), impl->base.object_properties + index );
+            queue_event( iface, index, state->lZ, time, seq );
+            notify = TRUE;
+        }
+
+        if (thumb_rz != impl->state.thumb_rz)
+        {
+            impl->state.thumb_rz = thumb_rz;
+            index = dinput_device_object_index_from_id( iface, DIDFT_ABSAXIS | DIDFT_MAKEINSTANCE( 5 ) );
+            state->lRz = scale_value( (LONG)(((double)thumb_rz / 255) * 32767), impl->base.object_properties + index );
+            queue_event( iface, index, state->lRz, time, seq );
+            notify = TRUE;
+        }
+        
+        
         if (buttons != impl->state.buttons) 
         {
             impl->state.buttons = buttons;
@@ -353,10 +385,6 @@ static void gamepad_handle_input( IDirectInputDevice8W *iface, short thumb_lx, s
                 index = dinput_device_object_index_from_id( iface, DIDFT_BUTTON | DIDFT_MAKEINSTANCE( i ) );
                 queue_event( iface, index, state->rgbButtons[i], time, seq );    
             }
-            
-            index = dinput_device_object_index_from_id( iface, DIDFT_ABSAXIS | DIDFT_MAKEINSTANCE( 2 ) );
-            state->lZ = scale_value( (buttons & (1<<10)) ? 32767 : ((buttons & (1<<11)) ? -32768 : 0), impl->base.object_properties + index );
-            queue_event( iface, index, state->lZ, time, seq );
             notify = TRUE;        
         }
         
@@ -450,7 +478,7 @@ static HRESULT gamepad_read( IDirectInputDevice8W *iface )
     {
         int gamepad_id;
         char dpad;
-        short buttons, thumb_lx, thumb_ly, thumb_rx, thumb_ry;        
+        short buttons, thumb_lx, thumb_ly, thumb_rx, thumb_ry, thumb_lz, thumb_rz;        
         
         gamepad_id = *(int*)(buffer + 2);
         if (gamepad_id != connected_gamepad_id) return DI_OK;
@@ -462,8 +490,10 @@ static HRESULT gamepad_read( IDirectInputDevice8W *iface )
         thumb_ly = *(short*)(buffer + 11);
         thumb_rx = *(short*)(buffer + 13);
         thumb_ry = *(short*)(buffer + 15);
-    
-        gamepad_handle_input( iface, thumb_lx, thumb_ly, thumb_rx, thumb_ry, buttons, dpad );
+        thumb_lz = *(unsigned char*)(buffer + 17);
+        thumb_rz = *(unsigned char*)(buffer + 18);
+
+        gamepad_handle_input( iface, thumb_lx, thumb_ly, thumb_rx, thumb_ry, thumb_lz, thumb_rz, buttons, dpad );
     }
     return DI_OK;
 }
@@ -513,7 +543,7 @@ static void get_device_objects( int *instance_count, DIDEVICEOBJECTINSTANCEW **o
     *instance_count = 0;
     *out = NULL;
 
-    if (mapper_type == MAPPER_TYPE_STANDARD) 
+    if (input_type & FLAG_DINPUT_MAPPER_STANDARD) 
     {
         DIDEVICEOBJECTINSTANCEW instances[17];
         *instance_count = 17;
@@ -574,10 +604,10 @@ static void get_device_objects( int *instance_count, DIDEVICEOBJECTINSTANCEW **o
         
         *out = instances;
     }
-    else if (mapper_type == MAPPER_TYPE_XINPUT) 
+    else if (input_type & FLAG_DINPUT_MAPPER_XINPUT) 
     {
-        DIDEVICEOBJECTINSTANCEW instances[16];
-        *instance_count = 16;
+        DIDEVICEOBJECTINSTANCEW instances[17];
+        *instance_count = 17;
         
         instances[index].guidType = GUID_XAxis;
         instances[index].dwOfs = DIJOFS_X;
@@ -604,7 +634,7 @@ static void get_device_objects( int *instance_count, DIDEVICEOBJECTINSTANCEW **o
         swprintf( instances[index].tszName, MAX_PATH, L"Z Axis" );
         instances[index].wUsagePage = HID_USAGE_PAGE_GENERIC;
         instances[index].wUsage = HID_USAGE_GENERIC_Z;
-        index++;    
+        index++;
 
         instances[index].guidType = GUID_RxAxis;
         instances[index].dwOfs = DIJOFS_RX;
@@ -622,6 +652,15 @@ static void get_device_objects( int *instance_count, DIDEVICEOBJECTINSTANCEW **o
         swprintf( instances[index].tszName, MAX_PATH, L"Ry Axis" );
         instances[index].wUsagePage = HID_USAGE_PAGE_GENERIC;
         instances[index].wUsage = HID_USAGE_GENERIC_RY;    
+        index++;
+
+        instances[index].guidType = GUID_RzAxis;
+        instances[index].dwOfs = DIJOFS_RZ;
+        instances[index].dwType = DIDFT_ABSAXIS | DIDFT_MAKEINSTANCE( 5 );
+        instances[index].dwFlags = DIDOI_ASPECTPOSITION;
+        swprintf( instances[index].tszName, MAX_PATH, L"Rz Axis" );
+        instances[index].wUsagePage = HID_USAGE_PAGE_GENERIC;
+        instances[index].wUsage = HID_USAGE_GENERIC_RZ;
         index++;
         
         for (i = 0; i < 10; i++) 
