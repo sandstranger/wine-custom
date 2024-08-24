@@ -147,7 +147,8 @@ static struct list monitors = LIST_INIT(monitors);
 static INT64 last_query_display_time;
 static pthread_mutex_t display_lock = PTHREAD_MUTEX_INITIALIZER;
 
-BOOL enable_thunk_lock = FALSE;
+BOOL decorated_mode = TRUE;
+UINT64 thunk_lock_callback = 0;
 
 #define VIRTUAL_HMONITOR ((HMONITOR)(UINT_PTR)(0x10000 + 1))
 static struct monitor virtual_monitor =
@@ -2098,6 +2099,27 @@ static HDC get_display_dc(void)
             display_dc = dc;
     }
     return display_dc;
+}
+
+HBITMAP get_display_bitmap(void)
+{
+    static RECT old_virtual_rect;
+    static HBITMAP hbitmap;
+    RECT virtual_rect;
+    HBITMAP ret;
+
+    virtual_rect = get_virtual_screen_rect( 0 );
+    pthread_mutex_lock( &display_dc_lock );
+    if (!EqualRect( &old_virtual_rect, &virtual_rect ))
+    {
+        if (hbitmap) NtGdiDeleteObjectApp( hbitmap );
+        hbitmap = NtGdiCreateBitmap( virtual_rect.right - virtual_rect.left,
+                                     virtual_rect.bottom - virtual_rect.top, 1, 32, NULL );
+        old_virtual_rect = virtual_rect;
+    }
+    ret = hbitmap;
+    pthread_mutex_unlock( &display_dc_lock );
+    return ret;
 }
 
 static void release_display_dc( HDC hdc )
@@ -4912,6 +4934,8 @@ void sysparams_init(void)
         grab_pointer = IS_OPTION_TRUE( buffer[0] );
     if (!get_config_key( hkey, appkey, "GrabFullscreen", buffer, sizeof(buffer) ))
         grab_fullscreen = IS_OPTION_TRUE( buffer[0] );
+    if (!get_config_key( hkey, appkey, "Decorated", buffer, sizeof(buffer) ))
+        decorated_mode = IS_OPTION_TRUE( buffer[0] );
 
 #undef IS_OPTION_TRUE
 }
@@ -6437,7 +6461,7 @@ ULONG_PTR WINAPI NtUserCallOneParam( ULONG_PTR arg, ULONG code )
         return set_dce_flags( UlongToHandle(arg), DCHF_ENABLEDC );
 
     case NtUserCallOneParam_EnableThunkLock:
-        enable_thunk_lock = arg;
+        thunk_lock_callback = arg;
         return 0;
 
     case NtUserCallOneParam_EnumClipboardFormats:
@@ -6539,7 +6563,10 @@ ULONG_PTR WINAPI NtUserCallTwoParam( ULONG_PTR arg1, ULONG_PTR arg2, ULONG code 
         return set_caret_pos( arg1, arg2 );
 
     case NtUserCallTwoParam_SetIconParam:
-        return set_icon_param( UlongToHandle(arg1), arg2 );
+        return set_icon_param( UlongToHandle(arg1), UlongToHandle(arg2) );
+
+    case NtUserCallTwoParam_SetIMECompositionWindowPos:
+        return set_ime_composition_window_pos( UlongToHandle(arg1), (const POINT *)arg2 );
 
     case NtUserCallTwoParam_UnhookWindowsHook:
         return unhook_windows_hook( arg1, (HOOKPROC)arg2 );

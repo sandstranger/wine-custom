@@ -1635,6 +1635,8 @@ static LRESULT LISTBOX_InsertItem( LB_DESCR *descr, INT index,
               descr->self, index, str ? debugstr_w(str) : "", get_item_height(descr, index));
     }
 
+    NtUserNotifyWinEvent( EVENT_OBJECT_CREATE, descr->self, OBJID_CLIENT, index + 1 );
+
     /* Repaint the items */
 
     LISTBOX_UpdateScroll( descr );
@@ -1733,6 +1735,8 @@ static LRESULT LISTBOX_RemoveItem( LB_DESCR *descr, INT index )
 
     /* We need to invalidate the original rect instead of the updated one. */
     LISTBOX_InvalidateItems( descr, index );
+
+    NtUserNotifyWinEvent( EVENT_OBJECT_DESTROY, descr->self, OBJID_CLIENT, index + 1 );
 
     if (descr->nb_items == 1)
     {
@@ -2944,7 +2948,12 @@ LRESULT ListBoxWndProc_common( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
         if (IS_MULTISELECT(descr)) return LB_ERR;
         LISTBOX_SetCaretIndex( descr, wParam, TRUE );
         ret = LISTBOX_SetSelection( descr, wParam, TRUE, FALSE );
-	if (ret != LB_ERR) ret = descr->selected_item;
+        if (ret != LB_ERR)
+        {
+            ret = descr->selected_item;
+            NtUserNotifyWinEvent( EVENT_OBJECT_FOCUS, descr->self, OBJID_CLIENT, ret + 1 );
+            NtUserNotifyWinEvent( EVENT_OBJECT_SELECTION, descr->self, OBJID_CLIENT, ret + 1 );
+        }
 	return ret;
 
     case LB_GETSELCOUNT:

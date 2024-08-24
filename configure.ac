@@ -795,6 +795,7 @@ AS_VAR_SET_IF([enable_archs],
 
 saved_CC=$CC
 saved_CFLAGS=$CFLAGS
+saved_CPPFLAGS=$CPPFLAGS
 saved_LDFLAGS=$LDFLAGS
 
 AS_UNSET(extra_arch)
@@ -833,6 +834,7 @@ do
         esac])
 
     CFLAGS=${CROSSCFLAGS:-"-g -O2"}
+    CPPFLAGS=""
     LDFLAGS=$CROSSLDFLAGS
     AS_VAR_COPY([CC],[${wine_arch}_CC])
     AS_VAR_COPY([${wine_arch}_CFLAGS],[CFLAGS])
@@ -1013,6 +1015,7 @@ done
 
 CC=$saved_CC
 CFLAGS=$saved_CFLAGS
+CPPFLAGS=$saved_CPPFLAGS
 LDFLAGS=$saved_LDFLAGS
 
 case $HOST_ARCH in

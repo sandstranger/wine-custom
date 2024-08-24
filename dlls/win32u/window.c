@@ -1818,6 +1818,29 @@ done:
 }
 
 
+static RECT get_visible_rect( HWND hwnd, BOOL shaped, UINT style, UINT ex_style, const struct window_rects *rects )
+{
+    UINT dpi = get_dpi_for_window( hwnd ), style_mask, ex_style_mask;
+    RECT visible_rect, rect = {0};
+
+    if (IsRectEmpty( &rects->window ) || EqualRect( &rects->window, &rects->client ) || shaped || !decorated_mode) return rects->window;
+    if (!user_driver->pGetWindowStyleMasks( hwnd, style, ex_style, &style_mask, &ex_style_mask )) return rects->window;
+    if (!NtUserAdjustWindowRect( &rect, style & style_mask, FALSE, ex_style & ex_style_mask, dpi )) return rects->window;
+
+    visible_rect = rects->window;
+    visible_rect.left   -= rect.left;
+    visible_rect.right  -= rect.right;
+    visible_rect.top    -= rect.top;
+    visible_rect.bottom -= rect.bottom;
+    if (visible_rect.top >= visible_rect.bottom) visible_rect.bottom = visible_rect.top + 1;
+    if (visible_rect.left >= visible_rect.right) visible_rect.right = visible_rect.left + 1;
+
+    TRACE( "hwnd %p, rects %s, style %#x, ex_style %#x -> visible_rect %s\n", hwnd,
+           debugstr_window_rects( rects ), style, ex_style, wine_dbgstr_rect( &visible_rect ) );
+    return visible_rect;
+}
+
+
 static BOOL get_surface_rect( const RECT *visible_rect, RECT *surface_rect )
 {
     RECT virtual_rect = NtUserGetVirtualScreenRect();
@@ -1874,8 +1897,12 @@ static struct window_surface *create_window_surface( HWND hwnd, UINT swp_flags, 
     BOOL shaped, needs_surface, create_opaque, is_layered;
     HWND parent = NtUserGetAncestor( hwnd, GA_PARENT );
     struct window_surface *new_surface;
+    UINT style, ex_style;
     RECT dummy;
     HRGN shape;
+
+    style = NtUserGetWindowLongW( hwnd, GWL_STYLE );
+    ex_style = NtUserGetWindowLongW( hwnd, GWL_EXSTYLE );
 
     if (get_window_region( hwnd, FALSE, &shape, &dummy )) shaped = FALSE;
     else if ((shaped = !!shape)) NtGdiDeleteObjectApp( shape );
@@ -1885,8 +1912,9 @@ static struct window_surface *create_window_surface( HWND hwnd, UINT swp_flags, 
     else if (parent && parent != NtUserGetDesktopWindow()) needs_surface = FALSE;
     else if (swp_flags & SWP_HIDEWINDOW) needs_surface = FALSE;
     else if (swp_flags & SWP_SHOWWINDOW) needs_surface = TRUE;
-    else needs_surface = !!(NtUserGetWindowLongW( hwnd, GWL_STYLE ) & WS_VISIBLE);
+    else needs_surface = !!(style & WS_VISIBLE);
 
+    rects->visible = get_visible_rect( hwnd, shaped, style, ex_style, rects );
     if (!get_surface_rect( &rects->visible, surface_rect )) needs_surface = FALSE;
     if (!get_default_window_surface( hwnd, surface_rect, &new_surface )) return NULL;
 
@@ -1953,6 +1981,8 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
 
     if (!(win = get_win_ptr( hwnd )) || win == WND_DESKTOP || win == WND_OTHER_PROCESS) return FALSE;
 
+    old_rects.visible = win->rects.visible;
+    old_rects.client = win->rects.client;
     old_surface = win->surface;
     if (old_surface != new_surface) swp_flags |= SWP_FRAMECHANGED;  /* force refreshing non-client area */
     if (new_surface == &dummy_surface) swp_flags |= SWP_NOREDRAW;
@@ -2067,6 +2097,67 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
 
     return ret;
 }
+
+static HRGN expose_window_surface_rect( struct window_surface *surface, UINT flags, RECT dirty )
+{
+    HRGN region, clipped;
+
+    intersect_rect( &dirty, &dirty, &surface->rect );
+    add_bounds_rect( &surface->bounds, &dirty );
+
+    if (!surface->clip_region || !flags) return 0;
+
+    clipped = NtGdiCreateRectRgn( surface->rect.left, surface->rect.top,
+                                  surface->rect.right, surface->rect.bottom );
+    NtGdiCombineRgn( clipped, clipped, surface->clip_region, RGN_DIFF );
+
+    region = NtGdiCreateRectRgn( dirty.left, dirty.top, dirty.right, dirty.bottom );
+    if (NtGdiCombineRgn( region, region, clipped, RGN_DIFF ) <= NULLREGION)
+    {
+        NtGdiDeleteObjectApp( region );
+        region = 0;
+    }
+
+    NtGdiDeleteObjectApp( clipped );
+    return region;
+}
+
+static BOOL expose_window_surface( HWND hwnd, UINT flags, const RECT *rect, UINT dpi )
+{
+    struct window_surface *surface;
+    struct window_rects rects;
+    HRGN region = 0;
+    WND *win;
+
+    if (!(win = get_win_ptr( hwnd )) || win == WND_DESKTOP || win == WND_OTHER_PROCESS) return FALSE;
+    if ((surface = win->surface)) window_surface_add_ref( surface );
+    rects = win->rects;
+    release_win_ptr( win );
+
+    if (surface)
+    {
+        window_surface_lock( surface );
+
+        if (!rect) add_bounds_rect( &surface->bounds, rect );
+        else
+        {
+            RECT dirty = *rect;
+            OffsetRect( &dirty, rects.client.left - rects.visible.left, rects.client.top - rects.visible.top );
+            if (!(region = expose_window_surface_rect( surface, flags, dirty ))) flags = 0;
+            else NtGdiOffsetRgn( region, rects.client.left - rects.visible.left, rects.client.top - rects.visible.top );
+        }
+
+        window_surface_unlock( surface );
+        if (surface->alpha_mask) window_surface_flush( surface );
+
+        window_surface_release( surface );
+    }
+
+    if (flags) NtUserRedrawWindow( hwnd, rect, region, flags );
+    if (region) NtGdiDeleteObjectApp( region );
+    return TRUE;
+}
+
 
 /*******************************************************************
  *           NtUserGetWindowRgnEx (win32u.@)
@@ -2303,9 +2394,9 @@ BOOL WINAPI NtUserUpdateLayeredWindow( HWND hwnd, HDC hdc_dst, const POINT *pts_
 
         if (!(flags & ULW_COLORKEY)) key = CLR_INVALID;
         window_surface_set_layered( surface, key, -1, 0xff000000 );
-        window_surface_flush( surface );
 
         user_driver->pUpdateLayeredWindow( hwnd, flags );
+        window_surface_flush( surface );
     }
 
 done:
@@ -4138,7 +4229,7 @@ static void get_next_minimized_child_pos( const RECT *parent, const MINIMIZEDMET
 
 static POINT get_minimized_pos( HWND hwnd, POINT pt )
 {
-    RECT rect, parent_rect;
+    RECT rect, parent_rect = {0};
     HWND parent, child;
     HRGN hrgn, tmp;
     MINIMIZEDMETRICS metrics;
@@ -4320,7 +4411,7 @@ static UINT arrange_iconic_windows( HWND parent )
 {
     int width, height, count = 0;
     MINIMIZEDMETRICS metrics;
-    RECT parent_rect;
+    RECT parent_rect = {0};
     HWND child;
     POINT pt;
 
@@ -5776,6 +5867,12 @@ ULONG_PTR WINAPI NtUserCallHwndParam( HWND hwnd, DWORD_PTR param, DWORD code )
     {
         struct send_hardware_input_params *params = (void *)param;
         return send_hardware_message( hwnd, params->flags, params->input, params->lparam );
+    }
+
+    case NtUserCallHwndParam_ExposeWindowSurface:
+    {
+        struct expose_window_surface_params *params = (void *)param;
+        return expose_window_surface( hwnd, params->flags, params->whole ? NULL : &params->rect, params->dpi );
     }
 
     /* temporary exports */
