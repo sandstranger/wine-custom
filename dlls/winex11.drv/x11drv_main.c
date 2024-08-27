@@ -84,7 +84,12 @@ int copy_default_colors = 128;
 int alloc_system_colors = 256;
 int xrender_error_base = 0;
 char *process_name = NULL;
-WNDPROC client_foreign_window_proc = NULL;
+UINT64 client_foreign_window_proc = 0;
+UINT64 dnd_enter_event_callback = 0;
+UINT64 dnd_position_event_callback = 0;
+UINT64 dnd_post_drop_callback = 0;
+UINT64 dnd_drop_event_callback = 0;
+UINT64 dnd_leave_event_callback = 0;
 
 static x11drv_error_callback err_callback;   /* current callback for error */
 static Display *err_callback_display;        /* display callback is set for */
@@ -644,6 +649,11 @@ static NTSTATUS x11drv_init( void *arg )
     if (!XInitThreads()) ERR( "XInitThreads failed, trouble ahead\n" );
     if (!(display = XOpenDisplay( NULL ))) return STATUS_UNSUCCESSFUL;
 
+    dnd_enter_event_callback = params->dnd_enter_event_callback;
+    dnd_position_event_callback = params->dnd_position_event_callback;
+    dnd_post_drop_callback = params->dnd_post_drop_callback;
+    dnd_drop_event_callback = params->dnd_drop_event_callback;
+    dnd_leave_event_callback = params->dnd_leave_event_callback;
     client_foreign_window_proc = params->foreign_window_proc;
 
     fcntl( ConnectionNumber(display), F_SETFD, 1 ); /* set close on exec flag */
@@ -799,14 +809,6 @@ BOOL X11DRV_SystemParametersInfo( UINT action, UINT int_param, void *ptr_param, 
     return FALSE;  /* let user32 handle it */
 }
 
-NTSTATUS x11drv_client_func( enum x11drv_client_funcs id, const void *params, ULONG size )
-{
-    void *ret_ptr;
-    ULONG ret_len;
-    return KeUserModeCallback( id, params, size, &ret_ptr, &ret_len );
-}
-
-
 const unixlib_entry_t __wine_unix_call_funcs[] =
 {
     x11drv_init,
@@ -821,18 +823,6 @@ C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
 
 
 #ifdef _WIN64
-
-static NTSTATUS x11drv_wow64_init( void *arg )
-{
-    struct
-    {
-        ULONG foreign_window_proc;
-    } *params32 = arg;
-    struct init_params params;
-
-    params.foreign_window_proc = UlongToPtr( params32->foreign_window_proc );
-    return x11drv_init( &params );
-}
 
 static NTSTATUS x11drv_wow64_tablet_get_packet( void *arg )
 {
@@ -858,7 +848,7 @@ static NTSTATUS x11drv_wow64_tablet_info( void *arg )
 
 const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
 {
-    x11drv_wow64_init,
+    x11drv_init,
     x11drv_tablet_attach_queue,
     x11drv_wow64_tablet_get_packet,
     x11drv_wow64_tablet_info,
