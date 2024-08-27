@@ -357,24 +357,23 @@ static void gamepad_handle_input( IDirectInputDevice8W *iface, short thumb_lx, s
             notify = TRUE;
         }
         
-        if (thumb_lz != impl->state.thumb_lz)
+        if (thumb_lz != impl->state.thumb_lz || thumb_rz != impl->state.thumb_rz)
         {
-            impl->state.thumb_lz = thumb_lz;
+            LONG value;
             index = dinput_device_object_index_from_id( iface, DIDFT_ABSAXIS | DIDFT_MAKEINSTANCE( 2 ) );
-            state->lZ = scale_value( (LONG)(((double)thumb_lz / 255) * 32767), impl->base.object_properties + index );
-            queue_event( iface, index, state->lZ, time, seq );
-            notify = TRUE;
-        }
 
-        if (thumb_rz != impl->state.thumb_rz)
-        {
+            // if lz and rz changed at the same time, only deal with lz.
+            if (thumb_lz != impl->state.thumb_lz)
+                value = MulDiv(thumb_lz, -32768, 255);
+            else
+                value = MulDiv(thumb_rz, 32767, 255);
+            state->lZ = scale_axis_value( value, impl->base.object_properties + index );
+            queue_event( iface, index, state->lZ, time, seq );
+
+            impl->state.thumb_lz = thumb_lz;
             impl->state.thumb_rz = thumb_rz;
-            index = dinput_device_object_index_from_id( iface, DIDFT_ABSAXIS | DIDFT_MAKEINSTANCE( 5 ) );
-            state->lRz = scale_value( (LONG)(((double)thumb_rz / 255) * 32767), impl->base.object_properties + index );
-            queue_event( iface, index, state->lRz, time, seq );
             notify = TRUE;
         }
-        
         
         if (buttons != impl->state.buttons) 
         {
@@ -606,8 +605,8 @@ static void get_device_objects( int *instance_count, DIDEVICEOBJECTINSTANCEW **o
     }
     else if (input_type & FLAG_DINPUT_MAPPER_XINPUT) 
     {
-        DIDEVICEOBJECTINSTANCEW instances[17];
-        *instance_count = 17;
+        DIDEVICEOBJECTINSTANCEW instances[16];
+        *instance_count = 16;
         
         instances[index].guidType = GUID_XAxis;
         instances[index].dwOfs = DIJOFS_X;
@@ -652,15 +651,6 @@ static void get_device_objects( int *instance_count, DIDEVICEOBJECTINSTANCEW **o
         swprintf( instances[index].tszName, MAX_PATH, L"Ry Axis" );
         instances[index].wUsagePage = HID_USAGE_PAGE_GENERIC;
         instances[index].wUsage = HID_USAGE_GENERIC_RY;    
-        index++;
-
-        instances[index].guidType = GUID_RzAxis;
-        instances[index].dwOfs = DIJOFS_RZ;
-        instances[index].dwType = DIDFT_ABSAXIS | DIDFT_MAKEINSTANCE( 5 );
-        instances[index].dwFlags = DIDOI_ASPECTPOSITION;
-        swprintf( instances[index].tszName, MAX_PATH, L"Rz Axis" );
-        instances[index].wUsagePage = HID_USAGE_PAGE_GENERIC;
-        instances[index].wUsage = HID_USAGE_GENERIC_RZ;
         index++;
         
         for (i = 0; i < 10; i++) 
