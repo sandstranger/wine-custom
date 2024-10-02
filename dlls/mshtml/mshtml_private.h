@@ -1493,6 +1493,8 @@ typedef struct {
     struct list *pending_xhr_events_tail;
     struct wine_rb_tree session_storage_map;
     void *blocking_xhr;
+    unsigned tasks_locked;
+    BOOL timer_blocked;
 } thread_data_t;
 
 thread_data_t *get_thread_data(BOOL);
@@ -1667,6 +1669,19 @@ static inline void traverse_variant(VARIANT *v, const char *name, nsCycleCollect
 {
     if(V_VT(v) == VT_DISPATCH || V_VT(v) == VT_UNKNOWN)
         note_cc_edge((nsISupports*)V_UNKNOWN(v), name, cb);
+}
+
+static inline void block_task_processing(void)
+{
+    thread_data_t *thread_data = get_thread_data(FALSE);
+    thread_data->tasks_locked++;
+}
+
+static inline void unblock_task_processing(void)
+{
+    thread_data_t *thread_data = get_thread_data(FALSE);
+    if(!--thread_data->tasks_locked)
+        unblock_tasks_and_timers(thread_data);
 }
 
 #ifdef __i386__

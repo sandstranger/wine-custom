@@ -369,9 +369,8 @@ void WCMD_HandleTildeModifiers(WCHAR **start, BOOL atExecute)
       break;
 
     } else {
-      int foridx = for_var_char_to_index(*lastModifier);
       /* Its a valid parameter identifier - OK */
-      if ((foridx >= 0) && (forloopcontext->variable[foridx] != NULL)) break;
+      if (for_var_is_valid(*lastModifier) && forloopcontext->variable[*lastModifier] != NULL) break;
 
       /* Its not a valid parameter identifier - step backwards */
       lastModifier--;
@@ -397,9 +396,8 @@ void WCMD_HandleTildeModifiers(WCHAR **start, BOOL atExecute)
                             *lastModifier-'0' + context -> shift_count[*lastModifier-'0'],
                             NULL, FALSE, TRUE));
   } else {
-    int foridx = for_var_char_to_index(*lastModifier);
-    if (foridx != -1)
-        lstrcpyW(outputparam, forloopcontext->variable[foridx]);
+    if (for_var_is_valid(*lastModifier))
+        lstrcpyW(outputparam, forloopcontext->variable[*lastModifier]);
   }
 
   /* 1. Handle '~' : Strip surrounding quotes */
@@ -639,7 +637,7 @@ RETURN_CODE WCMD_call(WCHAR *command)
             return_code = errorlevel = NO_ERROR;
         else
         {
-            WCMD_run_program(buffer, TRUE);
+            WCMD_call_command(buffer);
             /* If the thing we try to run does not exist, call returns 1 */
             if (errorlevel == RETURN_CODE_CANT_LAUNCH)
                 errorlevel = ERROR_INVALID_FUNCTION;

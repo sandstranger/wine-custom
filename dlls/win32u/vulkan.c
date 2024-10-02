@@ -103,11 +103,17 @@ static VkResult win32u_vkCreateWin32SurfaceKHR( VkInstance instance, const VkWin
 static void win32u_vkDestroySurfaceKHR( VkInstance instance, VkSurfaceKHR handle, const VkAllocationCallbacks *allocator )
 {
     struct surface *surface = surface_from_handle( handle );
+    WND *win;
 
     TRACE( "instance %p, handle 0x%s, allocator %p\n", instance, wine_dbgstr_longlong(handle), allocator );
     if (allocator) FIXME( "Support for allocation callbacks not implemented yet\n" );
 
-    list_remove( &surface->entry );
+    if ((win = get_win_ptr( surface->hwnd )) && win != WND_DESKTOP && win != WND_OTHER_PROCESS)
+    {
+        list_remove( &surface->entry );
+        release_win_ptr( win );
+    }
+
     p_vkDestroySurfaceKHR( instance, surface->host_surface, NULL /* allocator */ );
     driver_funcs->p_vulkan_surface_destroy( surface->hwnd, surface->driver_private );
     free( surface );
@@ -127,7 +133,7 @@ static VkResult win32u_vkQueuePresentKHR( VkQueue queue, const VkPresentInfoKHR 
         VkResult swapchain_res = present_info->pResults ? present_info->pResults[i] : res;
         struct surface *surface = surface_from_handle( surfaces[i] );
 
-        driver_funcs->p_vulkan_surface_presented( surface->hwnd, swapchain_res );
+        driver_funcs->p_vulkan_surface_presented( surface->hwnd, surface->driver_private, swapchain_res );
     }
 
     return res;
@@ -191,7 +197,7 @@ static void nulldrv_vulkan_surface_detach( HWND hwnd, void *private )
 {
 }
 
-static void nulldrv_vulkan_surface_presented( HWND hwnd, VkResult result )
+static void nulldrv_vulkan_surface_presented( HWND hwnd, void *private, VkResult result )
 {
 }
 
@@ -259,10 +265,10 @@ static void lazydrv_vulkan_surface_detach( HWND hwnd, void *private )
     return driver_funcs->p_vulkan_surface_detach( hwnd, private );
 }
 
-static void lazydrv_vulkan_surface_presented( HWND hwnd, VkResult result )
+static void lazydrv_vulkan_surface_presented( HWND hwnd, void *private, VkResult result )
 {
     vulkan_driver_load();
-    return driver_funcs->p_vulkan_surface_presented( hwnd, result );
+    driver_funcs->p_vulkan_surface_presented( hwnd, private, result );
 }
 
 static VkBool32 lazydrv_vkGetPhysicalDeviceWin32PresentationSupportKHR( VkPhysicalDevice device, uint32_t queue )

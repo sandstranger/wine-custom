@@ -290,12 +290,19 @@ static void init_caps_from_video_cinepak(GstCaps *caps, const MFVIDEOFORMAT *for
 
 static void init_caps_from_video_h264(GstCaps *caps, const MFVIDEOFORMAT *format, UINT format_size)
 {
-    init_caps_codec_data(caps, format + 1, format_size - sizeof(*format));
+    GstBuffer *buffer;
 
     gst_structure_remove_field(gst_caps_get_structure(caps, 0), "format");
     gst_structure_set_name(gst_caps_get_structure(caps, 0), "video/x-h264");
     gst_caps_set_simple(caps, "stream-format", G_TYPE_STRING, "byte-stream", NULL);
     gst_caps_set_simple(caps, "alignment", G_TYPE_STRING, "au", NULL);
+
+    if (format_size > sizeof(*format) && (buffer = gst_buffer_new_and_alloc(format_size - sizeof(*format))))
+    {
+        gst_buffer_fill(buffer, 0, format + 1, format_size - sizeof(*format));
+        gst_caps_set_simple(caps, "streamheader", GST_TYPE_BUFFER, buffer, NULL);
+        gst_buffer_unref(buffer);
+    }
 }
 
 static void init_caps_from_video_wmv(GstCaps *caps, const MFVIDEOFORMAT *format, UINT format_size,
@@ -369,6 +376,7 @@ static GstVideoFormat subtype_to_gst_video_format(const GUID *subtype)
         case D3DFMT_X1R5G5B5: return GST_VIDEO_FORMAT_RGB15;
         case D3DFMT_R5G6B5:   return GST_VIDEO_FORMAT_RGB16;
         case MAKEFOURCC('A','Y','U','V'): return GST_VIDEO_FORMAT_AYUV;
+        case MAKEFOURCC('I','Y','U','V'):
         case MAKEFOURCC('I','4','2','0'): return GST_VIDEO_FORMAT_I420;
         case MAKEFOURCC('N','V','1','2'): return GST_VIDEO_FORMAT_NV12;
         case MAKEFOURCC('U','Y','V','Y'): return GST_VIDEO_FORMAT_UYVY;

@@ -58,44 +58,26 @@ static VkBool32 (*pvkGetPhysicalDeviceWaylandPresentationSupportKHR)(VkPhysicalD
 
 static const struct vulkan_driver_funcs wayland_vulkan_driver_funcs;
 
-static HWND wine_vk_surface_get_hwnd(struct wayland_client_surface *client)
-{
-    return wl_surface_get_user_data(client->wl_surface);
-}
-
 static void wine_vk_surface_destroy(struct wayland_client_surface *client)
 {
-    HWND hwnd = wine_vk_surface_get_hwnd(client);
-    struct wayland_surface *wayland_surface = wayland_surface_lock_hwnd(hwnd);
+    HWND hwnd = wl_surface_get_user_data(client->wl_surface);
+    struct wayland_win_data *data = wayland_win_data_get(hwnd);
 
-    if (wayland_client_surface_release(client) && wayland_surface)
-    {
-        wayland_surface->client = NULL;
-    }
+    if (wayland_client_surface_release(client) && data)
+        data->client_surface = NULL;
 
-    if (wayland_surface) pthread_mutex_unlock(&wayland_surface->mutex);
+    if (data) wayland_win_data_release(data);
 }
 
 static VkResult wayland_vulkan_surface_create(HWND hwnd, VkInstance instance, VkSurfaceKHR *surface, void **private)
 {
     VkResult res;
     VkWaylandSurfaceCreateInfoKHR create_info_host;
-    struct wayland_surface *wayland_surface;
     struct wayland_client_surface *client;
 
     TRACE("%p %p %p %p\n", hwnd, instance, surface, private);
 
-    wayland_surface = wayland_surface_lock_hwnd(hwnd);
-    if (!wayland_surface)
-    {
-        ERR("Failed to find wayland surface for hwnd=%p\n", hwnd);
-        return VK_ERROR_OUT_OF_HOST_MEMORY;
-    }
-
-    client = wayland_surface_get_client(wayland_surface);
-    pthread_mutex_unlock(&wayland_surface->mutex);
-
-    if (!client)
+    if (!(client = get_client_surface(hwnd)))
     {
         ERR("Failed to create client surface for hwnd=%p\n", hwnd);
         return VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -136,25 +118,10 @@ static void wayland_vulkan_surface_detach(HWND hwnd, void *private)
 {
 }
 
-static void wayland_vulkan_surface_presented(HWND hwnd, VkResult result)
+static void wayland_vulkan_surface_presented(HWND hwnd, void *private, VkResult result)
 {
-    struct wayland_surface *wayland_surface;
-
-    if ((wayland_surface = wayland_surface_lock_hwnd(hwnd)))
-    {
-        wayland_surface_ensure_contents(wayland_surface);
-
-        /* Handle any processed configure request, to ensure the related
-         * surface state is applied by the compositor. */
-        if (wayland_surface->processing.serial &&
-            wayland_surface->processing.processed &&
-            wayland_surface_reconfigure(wayland_surface))
-        {
-            wl_surface_commit(wayland_surface->wl_surface);
-        }
-
-        pthread_mutex_unlock(&wayland_surface->mutex);
-    }
+    HWND toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
+    ensure_window_surface_contents(toplevel);
 }
 
 static VkBool32 wayland_vkGetPhysicalDeviceWin32PresentationSupportKHR(VkPhysicalDevice phys_dev,

@@ -500,7 +500,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH ChangeServiceConfig2A( SC_HANDLE service, DWORD le
         free( faw.lpRebootMsg );
         free( faw.lpCommand );
     }
-    else if (level == SERVICE_CONFIG_PRESHUTDOWN_INFO)
+    else if (level == SERVICE_CONFIG_PRESHUTDOWN_INFO || level == SERVICE_CONFIG_DELAYED_AUTO_START_INFO)
     {
         r = ChangeServiceConfig2W( service, level, info );
     }
@@ -798,6 +798,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH QueryServiceConfig2A( SC_HANDLE service, DWORD lev
             }
             break;
         case SERVICE_CONFIG_PRESHUTDOWN_INFO:
+        case SERVICE_CONFIG_DELAYED_AUTO_START_INFO:
             if (buffer && bufferW && *ret_size <= size)
                 memcpy(buffer, bufferW, *ret_size);
             break;
@@ -839,6 +840,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH QueryServiceConfig2W( SC_HANDLE service, DWORD lev
         break;
 
     case SERVICE_CONFIG_PRESHUTDOWN_INFO:
+    case SERVICE_CONFIG_DELAYED_AUTO_START_INFO:
         bufptr = buffer;
         break;
 
@@ -904,6 +906,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH QueryServiceConfig2W( SC_HANDLE service, DWORD lev
         break;
     }
     case SERVICE_CONFIG_PRESHUTDOWN_INFO:
+    case SERVICE_CONFIG_DELAYED_AUTO_START_INFO:
         return set_error( err );
 
     default:

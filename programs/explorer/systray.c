@@ -36,12 +36,22 @@ WINE_DEFAULT_DEBUG_CHANNEL(systray);
 #define TRAY_MINIMIZE_ALL 419
 #define TRAY_MINIMIZE_ALL_UNDO 416
 
+struct notify_data_icon
+{
+    /* data for the icon bitmap */
+    UINT width;
+    UINT height;
+    UINT planes;
+    UINT bpp;
+};
+
 struct notify_data  /* platform-independent format for NOTIFYICONDATA */
 {
     LONG  hWnd;
     UINT  uID;
     UINT  uFlags;
     UINT  uCallbackMessage;
+    struct notify_data_icon icon_info; /* systray icon bitmap info */
     WCHAR szTip[128];
     DWORD dwState;
     DWORD dwStateMask;
@@ -53,11 +63,8 @@ struct notify_data  /* platform-independent format for NOTIFYICONDATA */
     WCHAR szInfoTitle[64];
     DWORD dwInfoFlags;
     GUID  guidItem;
-    /* data for the icon bitmap */
-    UINT width;
-    UINT height;
-    UINT planes;
-    UINT bpp;
+    struct notify_data_icon balloon_icon_info; /* balloon icon bitmap info */
+    BYTE icon_data[];
 };
 
 #define ICON_DISPLAY_HIDDEN -1
@@ -102,7 +109,11 @@ static HWND tray_window;
 
 static unsigned int nb_displayed;
 
-static BOOL show_systray = TRUE, enable_shell, enable_taskbar;
+static BOOL enable_taskbar; /* show full taskbar, with dedicated systray area */
+static BOOL show_systray; /* show a standalone systray window */
+static BOOL enable_dock; /* allow systray icons to be docked in the host systray */
+static BOOL no_tray_items; /* hide the systray and all systray icons */
+
 static int icon_cx, icon_cy, tray_width, tray_height;
 static int start_button_width, taskbar_button_width;
 static WCHAR start_label[50];
@@ -126,8 +137,8 @@ static POINT balloon_pos;
 static LRESULT WINAPI shell_traywnd_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam );
 static LRESULT WINAPI tray_icon_wndproc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam );
 
-static BOOL show_icon( struct icon *icon );
-static BOOL hide_icon( struct icon *icon );
+static void show_icon( struct icon *icon );
+static void hide_icon( struct icon *icon );
 static BOOL delete_icon( struct icon *icon );
 
 static WNDCLASSEXW shell_traywnd_class =
@@ -239,9 +250,17 @@ static void balloon_create_timer( struct icon *icon )
     ti.lpszText = icon->info_text;
     SendMessageW( balloon_window, TTM_ADDTOOLW, 0, (LPARAM)&ti );
     if ((icon->info_flags & NIIF_ICONMASK) == NIIF_USER)
+    {
         SendMessageW( balloon_window, TTM_SETTITLEW, (WPARAM)icon->info_icon, (LPARAM)icon->info_title );
+    }
     else
-        SendMessageW( balloon_window, TTM_SETTITLEW, icon->info_flags, (LPARAM)icon->info_title );
+    {
+        UINT info_flags_wparam = icon->info_flags & NIIF_ERROR;
+
+        if (icon->info_flags & NIIF_LARGEICON)
+            info_flags_wparam += TTI_ERROR;
+        SendMessageW( balloon_window, TTM_SETTITLEW, info_flags_wparam, (LPARAM)icon->info_title );
+    }
     balloon_icon = icon;
     balloon_pos.x = balloon_pos.y = MAXLONG;
     update_systray_balloon_position();
@@ -604,7 +623,7 @@ static void systray_remove_icon( struct icon *icon )
         SetWindowPos( ptr->window, 0, pos.x, pos.y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER );
     }
 
-    if (!--nb_displayed && !enable_shell) do_hide_systray();
+    if (!--nb_displayed && !enable_taskbar) do_hide_systray();
     TRACE( "removed %u now %d icons\n", icon->id, nb_displayed );
 
     icon->display = ICON_DISPLAY_HIDDEN;
@@ -613,13 +632,15 @@ static void systray_remove_icon( struct icon *icon )
 }
 
 /* make an icon visible */
-static BOOL show_icon(struct icon *icon)
+static void show_icon(struct icon *icon)
 {
     TRACE( "id=0x%x, hwnd=%p\n", icon->id, icon->owner );
 
-    if (icon->display != ICON_DISPLAY_HIDDEN) return TRUE;  /* already displayed */
+    if (no_tray_items) return;
 
-    if (!enable_taskbar)
+    if (icon->display != ICON_DISPLAY_HIDDEN) return;  /* already displayed */
+
+    if (enable_dock)
     {
         DWORD old_exstyle = GetWindowLongW( icon->window, GWL_EXSTYLE );
 
@@ -641,18 +662,17 @@ static BOOL show_icon(struct icon *icon)
 
     update_tooltip_position( icon );
     update_balloon( icon );
-    return TRUE;
 }
 
 /* make an icon invisible */
-static BOOL hide_icon(struct icon *icon)
+static void hide_icon(struct icon *icon)
 {
     TRACE( "id=0x%x, hwnd=%p\n", icon->id, icon->owner );
 
-    if (icon->display == ICON_DISPLAY_HIDDEN) return TRUE;  /* already hidden */
+    if (icon->display == ICON_DISPLAY_HIDDEN) return;  /* already hidden */
 
-    if (!enable_taskbar && NtUserMessageCall( icon->window, WINE_SYSTRAY_DOCK_REMOVE, 0, 0,
-                                              NULL, NtUserSystemTrayCall, FALSE ))
+    if (enable_dock && NtUserMessageCall( icon->window, WINE_SYSTRAY_DOCK_REMOVE, 0, 0,
+                                          NULL, NtUserSystemTrayCall, FALSE ))
     {
         icon->display = ICON_DISPLAY_HIDDEN;
         icon->layered = FALSE;
@@ -663,7 +683,6 @@ static BOOL hide_icon(struct icon *icon)
 
     update_balloon( icon );
     update_tooltip_position( icon );
-    return TRUE;
 }
 
 /* Modifies an existing icon record */
@@ -692,7 +711,7 @@ static BOOL modify_icon( struct icon *icon, NOTIFYICONDATAW *nid )
             InvalidateRect( icon->window, NULL, TRUE );
         else if (icon->layered)
             paint_layered_icon( icon );
-        else if (!enable_taskbar)
+        else if (enable_dock)
             NtUserMessageCall( icon->window, WINE_SYSTRAY_DOCK_CLEAR, 0, 0,
                                NULL, NtUserSystemTrayCall, FALSE );
     }
@@ -712,7 +731,10 @@ static BOOL modify_icon( struct icon *icon, NOTIFYICONDATAW *nid )
         lstrcpynW( icon->info_title, nid->szInfoTitle, ARRAY_SIZE( icon->info_title ));
         icon->info_flags = nid->dwInfoFlags;
         icon->info_timeout = max(min(nid->uTimeout, BALLOON_SHOW_MAX_TIMEOUT), BALLOON_SHOW_MIN_TIMEOUT);
-        icon->info_icon = nid->hBalloonIcon;
+
+        if (icon->info_icon) DestroyIcon( icon->info_icon );
+        icon->info_icon = CopyIcon( nid->hBalloonIcon );
+
         update_balloon( icon );
     }
     if (icon->state & NIS_HIDDEN) hide_icon( icon );
@@ -825,11 +847,13 @@ static BOOL handle_incoming(HWND hwndSource, COPYDATASTRUCT *cds)
 {
     struct icon *icon = NULL;
     const struct notify_data *data;
+    const BYTE *icon_data;
     NOTIFYICONDATAW nid;
     int ret = FALSE;
 
     if (cds->cbData < sizeof(*data)) return FALSE;
     data = cds->lpData;
+    icon_data = data->icon_data;
 
     nid.cbSize           = sizeof(nid);
     nid.hWnd             = LongToHandle( data->hWnd );
@@ -849,24 +873,41 @@ static BOOL handle_incoming(HWND hwndSource, COPYDATASTRUCT *cds)
 
     /* FIXME: if statement only needed because we don't support interprocess
      * icon handles */
-    if ((nid.uFlags & NIF_ICON) && cds->cbData > sizeof(*data))
+    if (nid.uFlags & NIF_ICON)
     {
         LONG cbMaskBits;
         LONG cbColourBits;
-        const char *buffer = (const char *)(data + 1);
 
-        cbMaskBits = (data->width * data->height + 15) / 16 * 2;
-        cbColourBits = (data->planes * data->width * data->height * data->bpp + 15) / 16 * 2;
+        cbMaskBits = (data->icon_info.width * data->icon_info.height + 15) / 16 * 2;
+        cbColourBits = (data->icon_info.planes * data->icon_info.width * data->icon_info.height * data->icon_info.bpp + 15) / 16 * 2;
 
         if (cds->cbData < sizeof(*data) + cbMaskBits + cbColourBits)
         {
             ERR( "buffer underflow\n" );
             return FALSE;
         }
-        nid.hIcon = CreateIcon(NULL, data->width, data->height, data->planes, data->bpp,
-                               buffer, buffer + cbMaskBits);
+        nid.hIcon = CreateIcon(NULL, data->icon_info.width, data->icon_info.height, data->icon_info.planes, data->icon_info.bpp,
+                               icon_data, icon_data + cbMaskBits);
+        icon_data += cbMaskBits + cbColourBits;
     }
 
+    if ((nid.uFlags & NIF_INFO) && (nid.dwInfoFlags & NIIF_ICONMASK) == NIIF_USER)
+    {
+        /* Balloon icon */
+        LONG cbMaskBits;
+        LONG cbColourBits;
+
+        cbMaskBits = (data->balloon_icon_info.width * data->balloon_icon_info.height + 15) / 16 * 2;
+        cbColourBits = (data->balloon_icon_info.planes * data->balloon_icon_info.width * data->balloon_icon_info.height * data->balloon_icon_info.bpp + 15) / 16 * 2;
+
+        if (cds->cbData < ((char*)icon_data - (char*)data) + cbMaskBits + cbColourBits)
+        {
+            ERR( "buffer underflow\n" );
+            return FALSE;
+        }
+        nid.hBalloonIcon = CreateIcon(NULL, data->balloon_icon_info.width, data->balloon_icon_info.height, data->balloon_icon_info.planes, data->balloon_icon_info.bpp,
+                                      icon_data, icon_data + cbMaskBits);
+    }
     /* try forwarding to the display driver first */
     if (cds->dwData == NIM_ADD || !(icon = get_icon( nid.hWnd, nid.uID )))
     {
@@ -901,6 +942,7 @@ static BOOL handle_incoming(HWND hwndSource, COPYDATASTRUCT *cds)
 
 done:
     if (nid.hIcon) DestroyIcon( nid.hIcon );
+    if (nid.hBalloonIcon) DestroyIcon( nid.hBalloonIcon );
     sync_taskbar_buttons();
     return ret;
 }
@@ -909,7 +951,7 @@ static void add_taskbar_button( HWND hwnd )
 {
     struct taskbar_button *win;
 
-    if (!enable_taskbar || !show_systray) return;
+    if (!enable_taskbar) return;
 
     /* ignore our own windows */
     if (hwnd)
@@ -1064,7 +1106,7 @@ static LRESULT WINAPI shell_traywnd_proc( HWND hwnd, UINT msg, WPARAM wparam, LP
 
     case WM_DISPLAYCHANGE:
         if (!show_systray) do_hide_systray();
-        else if (!nb_displayed && !enable_shell) do_hide_systray();
+        else if (!nb_displayed && !enable_taskbar) do_hide_systray();
         else do_show_systray();
         break;
 
@@ -1147,7 +1189,7 @@ void handle_parent_notify( HWND hwnd, WPARAM wp )
 }
 
 /* this function creates the listener window */
-void initialize_systray( BOOL using_root, BOOL arg_enable_shell, BOOL arg_show_systray )
+void initialize_systray( BOOL arg_using_root, BOOL arg_enable_shell, BOOL arg_show_systray, BOOL arg_no_tray_items )
 {
     RECT work_rect, primary_rect, taskbar_rect;
 
@@ -1158,9 +1200,21 @@ void initialize_systray( BOOL using_root, BOOL arg_enable_shell, BOOL arg_show_s
 
     icon_cx = GetSystemMetrics( SM_CXSMICON ) + 2*ICON_BORDER;
     icon_cy = GetSystemMetrics( SM_CYSMICON ) + 2*ICON_BORDER;
-    show_systray = arg_show_systray;
-    enable_shell = arg_enable_shell;
-    enable_taskbar = enable_shell || !using_root;
+
+    if (arg_using_root)
+    {
+        show_systray = arg_show_systray;
+        enable_taskbar = FALSE;
+        enable_dock = TRUE;
+    }
+    else
+    {
+        show_systray = arg_show_systray && !arg_enable_shell;
+        enable_taskbar = arg_enable_shell;
+        enable_dock = FALSE;
+    }
+
+    no_tray_items = arg_no_tray_items;
 
     /* register the systray listener window class */
     if (!RegisterClassExW( &shell_traywnd_class ))

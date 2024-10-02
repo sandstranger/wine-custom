@@ -26,6 +26,7 @@
 #include "wincodec.h"
 
 #include "txc_dxtn.h"
+#include <assert.h>
 
 WINE_DEFAULT_DEBUG_CHANNEL(d3dx);
 
@@ -1474,6 +1475,13 @@ static void get_relevant_argb_components(const struct argb_conversion_info *info
     }
 }
 
+static float d3dx_clamp(float value, float min_value, float max_value)
+{
+    if (isnan(value))
+        return max_value;
+    return value < min_value ? min_value : value > max_value ? max_value : value;
+}
+
 /************************************************************
  * make_argb_color
  *
@@ -1498,15 +1506,33 @@ static DWORD make_argb_color(const struct argb_conversion_info *info, const DWOR
 }
 
 /* It doesn't work for components bigger than 32 bits (or somewhat smaller but unaligned). */
-void format_to_vec4(const struct pixel_format_desc *format, const BYTE *src, struct vec4 *dst)
+void format_to_d3dx_color(const struct pixel_format_desc *format, const BYTE *src, struct d3dx_color *dst)
 {
     DWORD mask, tmp;
     unsigned int c;
 
+    switch (format->type)
+    {
+    case FORMAT_ARGBF16:
+    case FORMAT_ARGBF:
+        dst->range = RANGE_FULL;
+        break;
+    case FORMAT_ARGB:
+    case FORMAT_INDEX:
+        dst->range = RANGE_UNORM;
+        break;
+    case FORMAT_ARGB_SNORM:
+        dst->range = RANGE_SNORM;
+        break;
+    default: /* Shouldn't pass FORMAT_DXT/FORMAT_UNKNOWN into here. */
+        assert(0);
+        break;
+    }
+
     for (c = 0; c < 4; ++c)
     {
         static const unsigned int component_offsets[4] = {3, 0, 1, 2};
-        float *dst_component = (float *)dst + component_offsets[c];
+        float *dst_component = &dst->value.x + component_offsets[c];
 
         if (format->bits[c])
         {
@@ -1519,6 +1545,26 @@ void format_to_vec4(const struct pixel_format_desc *format, const BYTE *src, str
                 *dst_component = float_16_to_32(tmp);
             else if (format->type == FORMAT_ARGBF)
                 *dst_component = *(float *)&tmp;
+            else if (format->type == FORMAT_ARGB_SNORM)
+            {
+                const uint32_t sign_bit = (1u << (format->bits[c] - 1));
+                uint32_t tmp_extended, tmp_masked = (tmp >> format->shift[c] % 8) & mask;
+
+                tmp_extended = tmp_masked;
+                if (tmp_masked & sign_bit)
+                {
+                    tmp_extended |= ~(sign_bit - 1);
+
+                    /*
+                     * In order to clamp to an even range, we need to ignore
+                     * the maximum negative value.
+                     */
+                    if (tmp_masked == sign_bit)
+                        tmp_extended |= 1;
+                }
+
+                *dst_component = (float)(((int32_t)tmp_extended)) / (sign_bit - 1);
+            }
             else
                 *dst_component = (float)((tmp >> format->shift[c] % 8) & mask) / mask;
         }
@@ -1528,7 +1574,7 @@ void format_to_vec4(const struct pixel_format_desc *format, const BYTE *src, str
 }
 
 /* It doesn't work for components bigger than 32 bits. */
-static void format_from_vec4(const struct pixel_format_desc *format, const struct vec4 *src, BYTE *dst)
+void format_from_d3dx_color(const struct pixel_format_desc *format, const struct d3dx_color *src, BYTE *dst)
 {
     DWORD v, mask32;
     unsigned int c, i;
@@ -1549,8 +1595,25 @@ static void format_from_vec4(const struct pixel_format_desc *format, const struc
             v = float_32_to_16(src_component);
         else if (format->type == FORMAT_ARGBF)
             v = *(DWORD *)&src_component;
+        else if (format->type == FORMAT_ARGB_SNORM)
+        {
+            const uint32_t max_value = (1u << (format->bits[c] - 1)) - 1;
+            float val = src_component;
+
+            if (src->range == RANGE_UNORM)
+                val = (val * 2.0f) - 1.0f;
+
+            v = d3dx_clamp(val, -1.0f, 1.0f) * max_value + 0.5f;
+        }
         else
-            v = (DWORD)(src_component * ((1 << format->bits[c]) - 1) + 0.5f);
+        {
+            float val = src_component;
+
+            if (src->range == RANGE_SNORM)
+                val = (val + 1.0f) / 2.0f;
+
+            v = d3dx_clamp(val, 0.0f, 1.0f) * ((1u << format->bits[c]) - 1) + 0.5f;
+        }
 
         for (i = format->shift[c] / 8 * 8; i < format->shift[c] + format->bits[c]; i += 8)
         {
@@ -1615,7 +1678,7 @@ void convert_argb_pixels(const BYTE *src, UINT src_row_pitch, UINT src_slice_pit
         const PALETTEENTRY *palette)
 {
     struct argb_conversion_info conv_info, ck_conv_info;
-    const struct pixel_format_desc *ck_format = NULL;
+    const struct pixel_format_desc *ck_format;
     DWORD channels[4];
     UINT min_width, min_height, min_depth;
     UINT x, y, z;
@@ -1670,29 +1733,27 @@ void convert_argb_pixels(const BYTE *src, UINT src_row_pitch, UINT src_slice_pit
                 }
                 else
                 {
-                    struct vec4 color, tmp;
+                    struct d3dx_color color, tmp;
 
-                    format_to_vec4(src_format, src_ptr, &color);
+                    format_to_d3dx_color(src_format, src_ptr, &color);
+                    tmp = color;
                     if (src_format->to_rgba)
-                        src_format->to_rgba(&color, &tmp, palette);
-                    else
-                        tmp = color;
+                        src_format->to_rgba(&color.value, &tmp.value, palette);
 
-                    if (ck_format)
+                    if (color_key)
                     {
                         DWORD ck_pixel;
 
-                        format_from_vec4(ck_format, &tmp, (BYTE *)&ck_pixel);
+                        format_from_d3dx_color(ck_format, &tmp, (BYTE *)&ck_pixel);
                         if (ck_pixel == color_key)
-                            tmp.w = 0.0f;
+                            tmp.value.w = 0.0f;
                     }
 
+                    color = tmp;
                     if (dst_format->from_rgba)
-                        dst_format->from_rgba(&tmp, &color);
-                    else
-                        color = tmp;
+                        dst_format->from_rgba(&tmp.value, &color.value);
 
-                    format_from_vec4(dst_format, &color, dst_ptr);
+                    format_from_d3dx_color(dst_format, &color, dst_ptr);
                 }
 
                 src_ptr += src_format->bytes_per_pixel;
@@ -1723,7 +1784,7 @@ void point_filter_argb_pixels(const BYTE *src, UINT src_row_pitch, UINT src_slic
         const PALETTEENTRY *palette)
 {
     struct argb_conversion_info conv_info, ck_conv_info;
-    const struct pixel_format_desc *ck_format = NULL;
+    const struct pixel_format_desc *ck_format;
     DWORD channels[4];
     UINT x, y, z;
 
@@ -1778,29 +1839,27 @@ void point_filter_argb_pixels(const BYTE *src, UINT src_row_pitch, UINT src_slic
                 }
                 else
                 {
-                    struct vec4 color, tmp;
+                    struct d3dx_color color, tmp;
 
-                    format_to_vec4(src_format, src_ptr, &color);
+                    format_to_d3dx_color(src_format, src_ptr, &color);
+                    tmp = color;
                     if (src_format->to_rgba)
-                        src_format->to_rgba(&color, &tmp, palette);
-                    else
-                        tmp = color;
+                        src_format->to_rgba(&color.value, &tmp.value, palette);
 
-                    if (ck_format)
+                    if (color_key)
                     {
                         DWORD ck_pixel;
 
-                        format_from_vec4(ck_format, &tmp, (BYTE *)&ck_pixel);
+                        format_from_d3dx_color(ck_format, &tmp, (BYTE *)&ck_pixel);
                         if (ck_pixel == color_key)
-                            tmp.w = 0.0f;
+                            tmp.value.w = 0.0f;
                     }
 
+                    color = tmp;
                     if (dst_format->from_rgba)
-                        dst_format->from_rgba(&tmp, &color);
-                    else
-                        color = tmp;
+                        dst_format->from_rgba(&tmp.value, &color.value);
 
-                    format_from_vec4(dst_format, &color, dst_ptr);
+                    format_from_d3dx_color(dst_format, &color, dst_ptr);
                 }
 
                 dst_ptr += dst_format->bytes_per_pixel;

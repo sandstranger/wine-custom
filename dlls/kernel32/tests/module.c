@@ -1627,6 +1627,145 @@ static void test_ddag_node(void)
     ok( se == node->Dependencies.Tail, "Expected end of the list.\n" );
 }
 
+static HANDLE test_tls_links_started, test_tls_links_done;
+
+static DWORD WINAPI test_tls_links_thread(void* tlsidx_v)
+{
+    SetEvent(test_tls_links_started);
+    WaitForSingleObject(test_tls_links_done, INFINITE);
+    return 0;
+}
+
+static void test_tls_links(void)
+{
+    TEB *teb = NtCurrentTeb(), *thread_teb;
+    THREAD_BASIC_INFORMATION tbi;
+    NTSTATUS status;
+    HANDLE thread;
+
+    ok(!!teb->ThreadLocalStoragePointer, "got NULL.\n");
+
+    test_tls_links_started = CreateEventW(NULL, FALSE, FALSE, NULL);
+    test_tls_links_done = CreateEventW(NULL, FALSE, FALSE, NULL);
+
+    thread = CreateThread(NULL, 0, test_tls_links_thread, NULL, CREATE_SUSPENDED, NULL);
+    do
+    {
+        /* workaround currently present Wine bug when thread teb may be not available immediately
+         * after creating a thread before it is initialized on the Unix side. */
+        Sleep(1);
+        status = NtQueryInformationThread(thread, ThreadBasicInformation, &tbi, sizeof(tbi), NULL);
+        ok(!status, "got %#lx.\n", status );
+    } while (!(thread_teb = tbi.TebBaseAddress));
+    ok(!thread_teb->ThreadLocalStoragePointer, "got %p.\n", thread_teb->ThreadLocalStoragePointer);
+    ResumeThread(thread);
+    WaitForSingleObject(test_tls_links_started, INFINITE);
+
+    ok(!!thread_teb->ThreadLocalStoragePointer, "got NULL.\n");
+    ok(!teb->TlsLinks.Flink, "got %p.\n", teb->TlsLinks.Flink);
+    ok(!teb->TlsLinks.Blink, "got %p.\n", teb->TlsLinks.Blink);
+    ok(!thread_teb->TlsLinks.Flink, "got %p.\n", thread_teb->TlsLinks.Flink);
+    ok(!thread_teb->TlsLinks.Blink, "got %p.\n", thread_teb->TlsLinks.Blink);
+    SetEvent(test_tls_links_done);
+    WaitForSingleObject(thread, INFINITE);
+
+    CloseHandle(thread);
+    CloseHandle(test_tls_links_started);
+    CloseHandle(test_tls_links_done);
+}
+
+
+static RTL_BALANCED_NODE *rtl_node_parent( RTL_BALANCED_NODE *node )
+{
+    return (RTL_BALANCED_NODE *)(node->ParentValue & ~(ULONG_PTR)RTL_BALANCED_NODE_RESERVED_PARENT_MASK);
+}
+
+static unsigned int check_address_index_tree( RTL_BALANCED_NODE *node )
+{
+    LDR_DATA_TABLE_ENTRY *mod;
+    unsigned int count;
+    char *base;
+
+    if (!node) return 0;
+    ok( (node->ParentValue & RTL_BALANCED_NODE_RESERVED_PARENT_MASK) <= 1, "got ParentValue %#Ix.\n",
+        node->ParentValue );
+
+    mod = CONTAINING_RECORD(node, LDR_DATA_TABLE_ENTRY, BaseAddressIndexNode);
+    base = mod->DllBase;
+    if (node->Left)
+    {
+        mod = CONTAINING_RECORD(node->Left, LDR_DATA_TABLE_ENTRY, BaseAddressIndexNode);
+        ok( (char *)mod->DllBase < base, "wrong ordering.\n" );
+    }
+    if (node->Right)
+    {
+        mod = CONTAINING_RECORD(node->Right, LDR_DATA_TABLE_ENTRY, BaseAddressIndexNode);
+        ok( (char *)mod->DllBase > base, "wrong ordering.\n" );
+    }
+
+    count = check_address_index_tree( node->Left );
+    count += check_address_index_tree( node->Right );
+    return count + 1;
+}
+
+static void test_base_address_index_tree(void)
+{
+    LIST_ENTRY *first = &NtCurrentTeb()->Peb->LdrData->InLoadOrderModuleList;
+    unsigned int tree_count, list_count = 0;
+    LDR_DATA_TABLE_ENTRY *mod, *mod2;
+    RTL_BALANCED_NODE *root, *node;
+    LDR_DDAG_NODE *ddag_node;
+    NTSTATUS status;
+    HMODULE hexe;
+    char *base;
+
+    /* Check for old LDR data strcuture. */
+    hexe = GetModuleHandleW( NULL );
+    ok( !!hexe, "Got NULL exe handle.\n" );
+    status = LdrFindEntryForAddress( hexe, &mod );
+    ok( !status, "got %#lx.\n", status );
+    if (!(ddag_node = mod->DdagNode))
+    {
+        win_skip( "DdagNode is NULL, skipping tests.\n" );
+        return;
+    }
+    ok( !!ddag_node->Modules.Flink, "Got NULL module link.\n" );
+    mod2 = CONTAINING_RECORD(ddag_node->Modules.Flink, LDR_DATA_TABLE_ENTRY, NodeModuleLink);
+    ok( mod2 == mod || broken( (void **)mod2 == (void **)mod - 1 ), "got %p, expected %p.\n", mod2, mod );
+    if (mod2 != mod)
+    {
+        win_skip( "Old LDR_DATA_TABLE_ENTRY structure, skipping tests.\n" );
+        return;
+    }
+
+    mod = CONTAINING_RECORD(first->Flink, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
+    ok( mod->BaseAddressIndexNode.ParentValue || mod->BaseAddressIndexNode.Left || mod->BaseAddressIndexNode.Right,
+        "got zero BaseAddressIndexNode.\n" );
+    root = &mod->BaseAddressIndexNode;
+    while (rtl_node_parent( root ))
+        root = rtl_node_parent( root );
+    tree_count = check_address_index_tree( root );
+    for (LIST_ENTRY *entry = first->Flink; entry != first; entry = entry->Flink)
+    {
+        ++list_count;
+        mod = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
+        base = mod->DllBase;
+        node = root;
+        mod2 = NULL;
+        while (1)
+        {
+            ok( !!node, "got NULL.\n" );
+            if (!node) break;
+            mod2 = CONTAINING_RECORD(node, LDR_DATA_TABLE_ENTRY, BaseAddressIndexNode);
+            if (base == (char *)mod2->DllBase) break;
+            if (base < (char *)mod2->DllBase) node = node->Left;
+            else                              node = node->Right;
+        }
+        ok( base == (char *)mod2->DllBase, "module %s not found.\n", debugstr_w(mod->BaseDllName.Buffer) );
+    }
+    ok( tree_count == list_count, "count mismatch %u, %u.\n", tree_count, list_count );
+}
+
 START_TEST(module)
 {
     WCHAR filenameW[MAX_PATH];
@@ -1663,4 +1802,6 @@ START_TEST(module)
     test_LdrGetDllFullName();
     test_apisets();
     test_ddag_node();
+    test_tls_links();
+    test_base_address_index_tree();
 }

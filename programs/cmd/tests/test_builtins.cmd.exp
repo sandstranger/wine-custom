@@ -477,6 +477,7 @@ foo@space@
 SUCCESS 0
 foo@space@
 FAILURE 1024
+FAILURE 1
 --- success/failure for CALL command
 FAILURE 1
 SUCCESS 0
@@ -501,6 +502,7 @@ FAILURE 255
 @todo_wine@FAILURE 1
 foo@space@
 SUCCESS 1024
+@todo_wine@SUCCESS 666
 --- success/failure for TYPE command
 FAILURE 1
 SUCCESS 0
@@ -828,6 +830,8 @@ N
 "foo bar"
 foo
 bar
+before!
+@todo_wine@after!
 --- in digit variables
 a %1 %2
 b %1 %2
@@ -1331,6 +1335,9 @@ d3
 a4
 c4
 d4
+--- EXIT /B inside FOR loops
+1
+2
 --- set /a
 ------ individual operations
 WINE_foo correctly 3
@@ -1588,11 +1595,15 @@ h=%h i=f j=i k=j k l m  n;;==  o p q r s t u v w x y z l=%l m=%m o=%o
 h=%h i=a j=b k=c l=d e f g m=%m n=%n o=%o
 h=%h i=a j=b k=c l=d e f g m=%m n=%n o=%o
 h=%h i=a j=b k= l= m=%m n=%n o=%o
+failure %i
 h=%h i=a j=e k=y l=z A B C D E F G H I J K L M N O P Q R S T U V W X Y Z m=%m n=%n o=%o
 h=%h i=a j=b k= l= m= n=%n o=%o
 h=%h i=a j=b k= l= m= n= o=%o
 u=a v=b w=c x=d y=e z=f A=%A a=%a
-@todo_wine@U=a V=b W=c X=d Y=e Z=f A=%A a=m
+U=a V=b W=c X=d Y=e Z=f [=g \=h ]=i ^=j _=k `=l A=%A a=m
+U=u V=v W=w X=x Y=y Z=z [=A \=B ]=C ^=D _=E `=%` A=a a=%a
+failure %A
+}=a ~=b
 h=%h i=a j=b k=c l=e m=%m o=%o@or_broken@h=%h i=a j=b k=c l=e m= o=%o
 h=%h i=e j=%j k=%k l=%l m=%m o=%o
 h=%h i=a j=b k=c l=d e f g m=%m n=%n o=%o@or_broken@h=%h i=a j=b k=c l=d e f g m= n=%n o=%o
@@ -1764,8 +1775,14 @@ footype=foo_opencmd
 footype=foo_opencmd
 +++
 footype=foo_opencmd
+--- testing association
+footype=cmd.exe /c "echo '%1'"
+'@drive@@path@foobar\test.foo'@or_broken@Skipped as not enough permissions
+footype=cmd.exe /c "echo '%*'"
+@todo_wine@' one two three'@or_broken@Skipped as not enough permissions
+foobar@or_broken@Skipped as not enough permissions
 --- resetting association
-@todo_wine@original value@or_broken@buggyXP@or_broken@!WINE_FOO!
+original value@or_broken@buggyXP@or_broken@!WINE_FOO!
 ------------ Testing CALL ------------
 --- external script
 foo@space@
@@ -1806,9 +1823,18 @@ abc
 abc
 abc %WINE_BAR% %WINE_BAR%
 abc def def
+--- builtin in expansions
+bar p1 echo
+bar cp1 echo
+bar cp2 echo
+@todo_wine@cp3
+bar b1 echo
+bar b2 echo
+bar b3 echo
+bar cb1 echo
 --- mixing batch and builtins
 bar@space@
-@todo_wine@foo
+foo
 foo
 foo
 bar@space@

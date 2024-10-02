@@ -37,13 +37,15 @@ typedef struct tagEnumSessionAsyncCallbackData
   GUID         requestGuid;
   DWORD        dwEnumSessionFlags;
   DWORD        dwTimeout;
+  WCHAR       *password;
   HANDLE       hSuicideRequest;
 } EnumSessionAsyncCallbackData;
 
 typedef struct tagDP_MSG_REPLY_STRUCT
 {
   HANDLE hReceipt;
-  WORD   wExpectedReply;
+  WORD  *expectedReplies;
+  DWORD  expectedReplyCount;
   LPVOID lpReplyMsg;
   DWORD  dwMsgBodySize;
   /* FIXME: Is the message header required as well? */
@@ -198,6 +200,7 @@ typedef struct IDirectPlayImpl
 HRESULT DP_HandleMessage( IDirectPlayImpl *This, const void *lpMessageBody,
         DWORD  dwMessageBodySize, const void *lpMessageHeader, WORD wCommandId, WORD wVersion,
         void **lplpReply, DWORD *lpdwMsgSize );
+DPSESSIONDESC2 *DP_DuplicateSessionDesc( const DPSESSIONDESC2 *src, BOOL dstAnsi, BOOL srcAnsi );
 
 /* DP SP external interfaces into DirectPlay */
 extern HRESULT DP_GetSPPlayerData( IDirectPlayImpl *lpDP, DPID idPlayer, void **lplpData );

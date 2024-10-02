@@ -99,6 +99,11 @@ typedef struct {
 } func_disp_t;
 
 typedef struct {
+    DispatchEx dispex;
+    const WCHAR *name;
+} stub_func_disp_t;
+
+typedef struct {
     func_disp_t *func_obj;
     VARIANT val;
 } func_obj_entry_t;
@@ -894,6 +899,86 @@ static HRESULT get_disp_prop(IDispatchEx *dispex, const WCHAR *name, LCID lcid, 
     return hres;
 }
 
+static HRESULT format_func_disp_string(const WCHAR *name, IServiceProvider *caller, VARIANT *res)
+{
+    unsigned name_len;
+    WCHAR *ptr;
+    BSTR str;
+
+    static const WCHAR func_prefixW[] =
+        {'\n','f','u','n','c','t','i','o','n',' '};
+    static const WCHAR func_suffixW[] =
+        {'(',')',' ','{','\n',' ',' ',' ',' ','[','n','a','t','i','v','e',' ','c','o','d','e',']','\n','}','\n'};
+
+    /* FIXME: This probably should be more generic. Also we should try to get IID_IActiveScriptSite and SID_GetCaller. */
+    if(!caller)
+        return E_ACCESSDENIED;
+
+    name_len = wcslen(name);
+    ptr = str = SysAllocStringLen(NULL, name_len + ARRAY_SIZE(func_prefixW) + ARRAY_SIZE(func_suffixW));
+    if(!str)
+        return E_OUTOFMEMORY;
+
+    memcpy(ptr, func_prefixW, sizeof(func_prefixW));
+    ptr += ARRAY_SIZE(func_prefixW);
+
+    memcpy(ptr, name, name_len * sizeof(WCHAR));
+    ptr += name_len;
+
+    memcpy(ptr, func_suffixW, sizeof(func_suffixW));
+
+    V_VT(res) = VT_BSTR;
+    V_BSTR(res) = str;
+    return S_OK;
+}
+
+static inline stub_func_disp_t *stub_func_disp_from_DispatchEx(DispatchEx *iface)
+{
+    return CONTAINING_RECORD(iface, stub_func_disp_t, dispex);
+}
+
+static void stub_function_destructor(DispatchEx *dispex)
+{
+    stub_func_disp_t *This = stub_func_disp_from_DispatchEx(dispex);
+    free(This);
+}
+
+static HRESULT stub_function_value(DispatchEx *dispex, LCID lcid, WORD flags, DISPPARAMS *params,
+        VARIANT *res, EXCEPINFO *ei, IServiceProvider *caller)
+{
+    stub_func_disp_t *This = stub_func_disp_from_DispatchEx(dispex);
+    HRESULT hres;
+
+    switch(flags) {
+    case DISPATCH_CONSTRUCT:
+        return MSHTML_E_INVALID_PROPERTY;
+    case DISPATCH_METHOD|DISPATCH_PROPERTYGET:
+        if(!res)
+            return E_INVALIDARG;
+        /* fall through */
+    case DISPATCH_METHOD:
+        return MSHTML_E_INVALID_PROPERTY;
+    case DISPATCH_PROPERTYGET:
+        hres = format_func_disp_string(This->name, caller, res);
+        break;
+    default:
+        FIXME("Unimplemented flags %x\n", flags);
+        hres = E_NOTIMPL;
+    }
+
+    return hres;
+}
+
+static const dispex_static_data_vtbl_t stub_function_dispex_vtbl = {
+    .destructor       = stub_function_destructor,
+    .value            = stub_function_value
+};
+
+static dispex_static_data_t stub_function_dispex = {
+    .name           = "Function",
+    .vtbl           = &stub_function_dispex_vtbl,
+};
+
 static HRESULT function_apply(func_disp_t *func, DISPPARAMS *dp, LCID lcid, VARIANT *res, EXCEPINFO *ei, IServiceProvider *caller)
 {
     IWineJSDispatchHost *this_iface;
@@ -1028,6 +1113,8 @@ static HRESULT function_value(DispatchEx *dispex, LCID lcid, WORD flags, DISPPAR
     HRESULT hres;
 
     switch(flags) {
+    case DISPATCH_CONSTRUCT:
+        return MSHTML_E_INVALID_PROPERTY;
     case DISPATCH_METHOD|DISPATCH_PROPERTYGET:
         if(!res)
             return E_INVALIDARG;
@@ -1037,37 +1124,9 @@ static HRESULT function_value(DispatchEx *dispex, LCID lcid, WORD flags, DISPPAR
             return E_UNEXPECTED;
         hres = dispex_call_builtin(This->obj, This->info->id, params, res, ei, caller);
         break;
-    case DISPATCH_PROPERTYGET: {
-        unsigned name_len;
-        WCHAR *ptr;
-        BSTR str;
-
-        static const WCHAR func_prefixW[] =
-            {'\n','f','u','n','c','t','i','o','n',' '};
-        static const WCHAR func_suffixW[] =
-            {'(',')',' ','{','\n',' ',' ',' ',' ','[','n','a','t','i','v','e',' ','c','o','d','e',']','\n','}','\n'};
-
-        /* FIXME: This probably should be more generic. Also we should try to get IID_IActiveScriptSite and SID_GetCaller. */
-        if(!caller)
-            return E_ACCESSDENIED;
-
-        name_len = SysStringLen(This->info->name);
-        ptr = str = SysAllocStringLen(NULL, name_len + ARRAY_SIZE(func_prefixW) + ARRAY_SIZE(func_suffixW));
-        if(!str)
-            return E_OUTOFMEMORY;
-
-        memcpy(ptr, func_prefixW, sizeof(func_prefixW));
-        ptr += ARRAY_SIZE(func_prefixW);
-
-        memcpy(ptr, This->info->name, name_len*sizeof(WCHAR));
-        ptr += name_len;
-
-        memcpy(ptr, func_suffixW, sizeof(func_suffixW));
-
-        V_VT(res) = VT_BSTR;
-        V_BSTR(res) = str;
-        return S_OK;
-    }
+    case DISPATCH_PROPERTYGET:
+        hres = format_func_disp_string(This->info->name, caller, res);
+        break;
     default:
         FIXME("Unimplemented flags %x\n", flags);
         hres = E_NOTIMPL;
@@ -1119,6 +1178,18 @@ static HRESULT function_invoke(DispatchEx *dispex, DISPID id, LCID lcid, WORD fl
         /* fall through */
     case DISPATCH_METHOD:
         return function_props[idx].invoke(This, params, lcid, res, ei, caller);
+    case DISPATCH_PROPERTYGET: {
+        stub_func_disp_t *disp = calloc(1, sizeof(stub_func_disp_t));
+
+        if(!disp)
+            return E_OUTOFMEMORY;
+        disp->name = function_props[idx].name;
+        init_dispatch_with_owner(&disp->dispex, &stub_function_dispex, This->obj);
+
+        V_VT(res) = VT_DISPATCH;
+        V_DISPATCH(res) = (IDispatch*)&disp->dispex.IWineJSDispatchHost_iface;
+        break;
+    }
     default:
         return MSHTML_E_INVALID_PROPERTY;
     }
@@ -1134,13 +1205,9 @@ static const dispex_static_data_vtbl_t function_dispex_vtbl = {
     .invoke           = function_invoke
 };
 
-static const tid_t function_iface_tids[] = {0};
-
 static dispex_static_data_t function_dispex = {
-    "Function",
-    &function_dispex_vtbl,
-    NULL_tid,
-    function_iface_tids
+    .name           = "Function",
+    .vtbl           = &function_dispex_vtbl,
 };
 
 static func_disp_t *create_func_disp(DispatchEx *obj, func_info_t *info)

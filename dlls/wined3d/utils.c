@@ -5353,8 +5353,6 @@ const char *debug_d3dstate(uint32_t state)
         return "STATE_COMPUTE_UNORDERED_ACCESS_VIEW_BINDING";
     if (STATE_IS_GRAPHICS_UNORDERED_ACCESS_VIEW_BINDING(state))
         return "STATE_GRAPHICS_UNORDERED_ACCESS_VIEW_BINDING";
-    if (STATE_IS_TRANSFORM(state))
-        return wine_dbg_sprintf("STATE_TRANSFORM(%s)", debug_d3dtstype(state - STATE_TRANSFORM(0)));
     if (STATE_IS_STREAMSRC(state))
         return "STATE_STREAMSRC";
     if (STATE_IS_INDEXBUFFER(state))
@@ -5363,8 +5361,6 @@ const char *debug_d3dstate(uint32_t state)
         return "STATE_VDECL";
     if (STATE_IS_VIEWPORT(state))
         return "STATE_VIEWPORT";
-    if (STATE_IS_LIGHT_TYPE(state))
-        return "STATE_LIGHT_TYPE";
     if (STATE_IS_SCISSORRECT(state))
         return "STATE_SCISSORRECT";
     if (STATE_IS_CLIPPLANE(state))
@@ -5377,8 +5373,6 @@ const char *debug_d3dstate(uint32_t state)
         return "STATE_BASEVERTEXINDEX";
     if (STATE_IS_FRAMEBUFFER(state))
         return "STATE_FRAMEBUFFER";
-    if (STATE_IS_POINT_ENABLE(state))
-        return "STATE_POINT_ENABLE";
     if (STATE_IS_STREAM_OUTPUT(state))
         return "STATE_STREAM_OUTPUT";
     if (STATE_IS_BLEND(state))

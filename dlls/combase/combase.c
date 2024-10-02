@@ -174,40 +174,39 @@ static struct init_spy *get_spy_entry(struct tlsdata *tlsdata, unsigned int id)
     return NULL;
 }
 
-static NTSTATUS create_key(HKEY *retkey, ACCESS_MASK access, OBJECT_ATTRIBUTES *attr)
+static NTSTATUS create_key(HKEY *retkey, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr)
 {
     NTSTATUS status = NtCreateKey((HANDLE *)retkey, access, attr, 0, NULL, 0, NULL);
 
     if (status == STATUS_OBJECT_NAME_NOT_FOUND)
     {
-        HANDLE subkey, root = attr->RootDirectory;
+        HANDLE subkey;
         WCHAR *buffer = attr->ObjectName->Buffer;
-        DWORD attrs, pos = 0, i = 0, len = attr->ObjectName->Length / sizeof(WCHAR);
+        DWORD pos = 0, i = 0, len = attr->ObjectName->Length / sizeof(WCHAR);
         UNICODE_STRING str;
+        OBJECT_ATTRIBUTES attr2 = *attr;
 
         while (i < len && buffer[i] != '\\') i++;
         if (i == len) return status;
 
-        attrs = attr->Attributes;
-        attr->ObjectName = &str;
+        attr2.ObjectName = &str;
 
         while (i < len)
         {
             str.Buffer = buffer + pos;
             str.Length = (i - pos) * sizeof(WCHAR);
-            status = NtCreateKey(&subkey, access, attr, 0, NULL, 0, NULL);
-            if (attr->RootDirectory != root) NtClose(attr->RootDirectory);
+            status = NtCreateKey(&subkey, access, &attr2, 0, NULL, 0, NULL);
+            if (attr2.RootDirectory != attr->RootDirectory) NtClose(attr2.RootDirectory);
             if (status) return status;
-            attr->RootDirectory = subkey;
+            attr2.RootDirectory = subkey;
             while (i < len && buffer[i] == '\\') i++;
             pos = i;
             while (i < len && buffer[i] != '\\') i++;
         }
         str.Buffer = buffer + pos;
         str.Length = (i - pos) * sizeof(WCHAR);
-        attr->Attributes = attrs;
-        status = NtCreateKey((HANDLE *)retkey, access, attr, 0, NULL, 0, NULL);
-        if (attr->RootDirectory != root) NtClose(attr->RootDirectory);
+        status = NtCreateKey((HANDLE *)retkey, access, &attr2, 0, NULL, 0, NULL);
+        if (attr2.RootDirectory != attr->RootDirectory) NtClose(attr2.RootDirectory);
     }
     return status;
 }
@@ -2051,11 +2050,11 @@ static BOOL com_peek_message(struct apartment *apt, MSG *msg)
 HRESULT WINAPI CoWaitForMultipleHandles(DWORD flags, DWORD timeout, ULONG handle_count, HANDLE *handles,
         DWORD *index)
 {
-    BOOL check_apc = !!(flags & COWAIT_ALERTABLE), post_quit = FALSE, message_loop;
+    BOOL check_apc = !!(flags & COWAIT_ALERTABLE), message_loop;
+    struct { BOOL post; UINT code; } quit = { .post = FALSE };
     DWORD start_time, wait_flags = 0;
     struct tlsdata *tlsdata;
     struct apartment *apt;
-    UINT exit_code;
     HRESULT hr;
 
     TRACE("%#lx, %#lx, %lu, %p, %p\n", flags, timeout, handle_count, handles, index);
@@ -2156,8 +2155,8 @@ HRESULT WINAPI CoWaitForMultipleHandles(DWORD flags, DWORD timeout, ULONG handle
                     if (msg.message == WM_QUIT)
                     {
                         TRACE("Received WM_QUIT message\n");
-                        post_quit = TRUE;
-                        exit_code = msg.wParam;
+                        quit.post = TRUE;
+                        quit.code = msg.wParam;
                     }
                     else
                     {
@@ -2191,7 +2190,7 @@ HRESULT WINAPI CoWaitForMultipleHandles(DWORD flags, DWORD timeout, ULONG handle
         }
         break;
     }
-    if (post_quit) PostQuitMessage(exit_code);
+    if (quit.post) PostQuitMessage(quit.code);
 
     TRACE("-- %#lx\n", hr);
 

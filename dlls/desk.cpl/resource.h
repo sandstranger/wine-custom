@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Mohamad Al-Jaf
+ * Copyright 2024 Rémi Bernon for CodeWeavers
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -14,14 +14,31 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+ *
  */
 
-#include "wine/debug.h"
+#include <stddef.h>
+#include <stdarg.h>
 
-WINE_DEFAULT_DEBUG_CHANNEL(msmpeg2vdec);
+#include <windef.h>
+#include <winbase.h>
 
-HRESULT WINAPI DllGetClassObject( REFCLSID clsid, REFIID riid, void **out )
-{
-    FIXME( "clsid %s, riid %s, out %p stub!\n", debugstr_guid(clsid), debugstr_guid(riid), out );
-    return CLASS_E_CLASSNOTAVAILABLE;
-}
+#include <winuser.h>
+#include <commctrl.h>
+
+/* strings */
+#define IDS_CPL_NAME        1
+#define IDS_CPL_INFO        2
+
+/* dialogs */
+#define IDD_DESKTOP         1000
+
+/* controls */
+#define IDC_STATIC          -1
+
+#define IDC_VIRTUAL_DESKTOP         2000
+#define IDC_DISPLAY_SETTINGS_LIST   2001
+#define IDC_DISPLAY_SETTINGS_RESET  2002
+#define IDC_DISPLAY_SETTINGS_APPLY  2003
+
+#define ICO_MAIN            100
