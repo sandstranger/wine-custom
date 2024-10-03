@@ -6027,8 +6027,8 @@ printf %s "checking for $CXX option to enable C++11 features... " >&6; }
 if test ${ac_cv_prog_cxx_11+y}
 then :
   printf %s "(cached) " >&6
-else $as_nop
-  ac_cv_prog_cxx_11=no
+else case e in #(
+  e) ac_cv_prog_cxx_cxx11=no
 ac_save_CXX=$CXX
 cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
@@ -6076,8 +6076,8 @@ printf %s "checking for $CXX option to enable C++98 features... " >&6; }
 if test ${ac_cv_prog_cxx_98+y}
 then :
   printf %s "(cached) " >&6
-else $as_nop
-  ac_cv_prog_cxx_98=no
+else case e in #(
+  e) ac_cv_prog_cxx_cxx98=no
 ac_save_CXX=$CXX
 cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
