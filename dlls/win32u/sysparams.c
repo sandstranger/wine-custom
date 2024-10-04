@@ -2250,6 +2250,40 @@ RECT map_dpi_rect( RECT rect, UINT dpi_from, UINT dpi_to )
 }
 
 /**********************************************************************
+ *              map_dpi_region
+ */
+HRGN map_dpi_region( HRGN hrgn, UINT dpi_from, UINT dpi_to )
+{
+    RGNDATA *data;
+    UINT i, size;
+
+    if (!(size = NtGdiGetRegionData( hrgn, 0, NULL ))) return 0;
+    if (!(data = malloc( size ))) return 0;
+    NtGdiGetRegionData( hrgn, size, data );
+
+    if (dpi_from && dpi_to && dpi_from != dpi_to)
+    {
+        RECT *rects = (RECT *)data->Buffer;
+        for (i = 0; i < data->rdh.nCount; i++) rects[i] = map_dpi_rect( rects[i], dpi_from, dpi_to );
+    }
+
+    hrgn = NtGdiExtCreateRegion( NULL, data->rdh.dwSize + data->rdh.nRgnSize, data );
+    free( data );
+    return hrgn;
+}
+
+/**********************************************************************
+ *              map_dpi_window_rects
+ */
+struct window_rects map_dpi_window_rects( struct window_rects rects, UINT dpi_from, UINT dpi_to )
+{
+    rects.window = map_dpi_rect( rects.window, dpi_from, dpi_to );
+    rects.client = map_dpi_rect( rects.client, dpi_from, dpi_to );
+    rects.visible = map_dpi_rect( rects.visible, dpi_from, dpi_to );
+    return rects;
+}
+
+/**********************************************************************
  *              map_dpi_point
  */
 POINT map_dpi_point( POINT pt, UINT dpi_from, UINT dpi_to )
@@ -4891,7 +4925,6 @@ void sysparams_init(void)
 
     /* FIXME: what do the DpiScalingVer flags mean? */
     get_dword_entry( (union sysparam_all_entry *)&entry_DPISCALINGVER, 0, &dpi_scaling, 0 );
-    if (!dpi_scaling) NtUserSetProcessDpiAwarenessContext( NTUSER_DPI_PER_MONITOR_AWARE, 0 );
 
     if (volatile_base_key && dispos == REG_CREATED_NEW_KEY)  /* first process, initialize entries */
     {
@@ -6857,6 +6890,31 @@ NTSTATUS WINAPI NtGdiDdDDIEnumAdapters2( D3DKMT_ENUMADAPTERS2 *desc )
 
 done:
     while (count) gpu_release( current_gpus[--count] );
+    return status;
+}
+
+/******************************************************************************
+ *           NtGdiDdDDIEnumAdapters    (win32u.@)
+ */
+NTSTATUS WINAPI NtGdiDdDDIEnumAdapters( D3DKMT_ENUMADAPTERS *desc )
+{
+    NTSTATUS status;
+    D3DKMT_ENUMADAPTERS2 desc2 = {0};
+
+    if (!desc) return STATUS_INVALID_PARAMETER;
+
+    if ((status = NtGdiDdDDIEnumAdapters2( &desc2 ))) return status;
+
+    if (!(desc2.pAdapters = calloc( desc2.NumAdapters, sizeof(D3DKMT_ADAPTERINFO) ))) return STATUS_NO_MEMORY;
+
+    if (!(status = NtGdiDdDDIEnumAdapters2( &desc2 )))
+    {
+        desc->NumAdapters = min( MAX_ENUM_ADAPTERS, desc2.NumAdapters );
+        memcpy( desc->Adapters, desc2.pAdapters, desc->NumAdapters * sizeof(D3DKMT_ADAPTERINFO) );
+    }
+
+    free( desc2.pAdapters );
+
     return status;
 }
 

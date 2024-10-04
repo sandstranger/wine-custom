@@ -989,20 +989,37 @@ static SQLRETURN col_attribute_win32_a( struct statement *stmt, SQLUSMALLINT col
 
         switch (field_id)
         {
-        case SQL_COLUMN_COUNT:
-            field_id = SQL_DESC_COUNT;
+        case SQL_DESC_COUNT:
+            field_id = SQL_COLUMN_COUNT;
             break;
 
-        case SQL_COLUMN_NAME:
-            field_id = SQL_DESC_NAME;
+        case SQL_DESC_TYPE:
+            field_id = SQL_COLUMN_TYPE;
             break;
 
-        case SQL_COLUMN_NULLABLE:
-            field_id = SQL_DESC_NULLABLE;
+        case SQL_DESC_LENGTH:
+            field_id = SQL_COLUMN_LENGTH;
+            break;
+
+        case SQL_DESC_PRECISION:
+            field_id = SQL_COLUMN_PRECISION;
+            break;
+
+        case SQL_DESC_SCALE:
+            field_id = SQL_COLUMN_SCALE;
+            break;
+
+        case SQL_DESC_NULLABLE:
+            field_id = SQL_COLUMN_NULLABLE;
+            break;
+
+        case SQL_DESC_NAME:
+            field_id = SQL_COLUMN_NAME;
             break;
 
         case SQL_COLUMN_TYPE:
         case SQL_COLUMN_DISPLAY_SIZE:
+        case SQL_MAX_COLUMNS_IN_TABLE:
             break;
 
         default:
@@ -4273,6 +4290,9 @@ static void free_attribute_list( struct attribute_list *list )
 {
     UINT32 i;
     for (i = 0; i < list->count; i++) free_attribute( list->attrs[i] );
+    free( list->attrs );
+    list->count = 0;
+    list->attrs = NULL;
 }
 
 static BOOL append_attribute( struct attribute_list *list, struct attribute *attr )
@@ -6174,20 +6194,37 @@ static SQLRETURN col_attribute_win32_w( struct statement *stmt, SQLUSMALLINT col
 
         switch (field_id)
         {
-        case SQL_COLUMN_COUNT:
-            field_id = SQL_DESC_COUNT;
+        case SQL_DESC_COUNT:
+            field_id = SQL_COLUMN_COUNT;
             break;
 
-        case SQL_COLUMN_NAME:
-            field_id = SQL_DESC_NAME;
+        case SQL_DESC_TYPE:
+            field_id = SQL_COLUMN_TYPE;
             break;
 
-        case SQL_COLUMN_NULLABLE:
-            field_id = SQL_DESC_NULLABLE;
+        case SQL_DESC_LENGTH:
+            field_id = SQL_COLUMN_LENGTH;
+            break;
+
+        case SQL_DESC_PRECISION:
+            field_id = SQL_COLUMN_PRECISION;
+            break;
+
+        case SQL_DESC_SCALE:
+            field_id = SQL_COLUMN_SCALE;
+            break;
+
+        case SQL_DESC_NULLABLE:
+            field_id = SQL_COLUMN_NULLABLE;
+            break;
+
+        case SQL_DESC_NAME:
+            field_id = SQL_COLUMN_NAME;
             break;
 
         case SQL_COLUMN_TYPE:
         case SQL_COLUMN_DISPLAY_SIZE:
+        case SQL_MAX_COLUMNS_IN_TABLE:
             break;
 
         default:
@@ -7875,6 +7912,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD reason, LPVOID reserved)
         break;
 
     case DLL_PROCESS_DETACH:
+        WINE_UNIX_CALL( process_detach, NULL );
         if (reserved) break;
     }
 

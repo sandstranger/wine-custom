@@ -1045,7 +1045,8 @@ static void write_registry_values(const WCHAR *regkey, const WCHAR *driver, cons
                     {
                         if(GetFileAttributesW(divider) == INVALID_FILE_ATTRIBUTES)
                         {
-                            len = lstrlenW(path) + lstrlenW(L"\\") + lstrlenW(divider) + 1;
+                            int pathlen = lstrlenW(path);
+                            len = pathlen + 1 + lstrlenW(divider) + 1;
                             value = malloc(len * sizeof(WCHAR));
                             if(!value)
                             {
@@ -1055,7 +1056,8 @@ static void write_registry_values(const WCHAR *regkey, const WCHAR *driver, cons
                             }
 
                             lstrcpyW(value, path);
-                            lstrcatW(value, L"\\");
+                            if (pathlen && path[pathlen - 1] != '\\')
+                                lstrcatW(value, L"\\");
                         }
                         else
                         {
@@ -1582,19 +1584,48 @@ BOOL WINAPI SQLRemoveDriverManager(LPDWORD pdwUsageCount)
 
 BOOL WINAPI SQLRemoveDSNFromIniW(LPCWSTR lpszDSN)
 {
-    HKEY hkey;
+    HKEY hkey, hkeyroot = HKEY_CURRENT_USER;
 
     TRACE("%s\n", debugstr_w(lpszDSN));
 
+    if (!SQLValidDSNW(lpszDSN))
+    {
+        push_error(ODBC_ERROR_INVALID_DSN, L"Invalid DSN");
+        return FALSE;
+    }
+
     clear_errors();
 
-    if (RegOpenKeyW(HKEY_LOCAL_MACHINE, L"Software\\ODBC\\ODBC.INI\\ODBC Data Sources", &hkey) == ERROR_SUCCESS)
+    if (config_mode == ODBC_SYSTEM_DSN)
+        hkeyroot = HKEY_LOCAL_MACHINE;
+    else if (config_mode == ODBC_BOTH_DSN)
+    {
+        WCHAR *regpath = malloc( (wcslen(L"Software\\ODBC\\ODBC.INI\\") + wcslen(lpszDSN) + 1) * sizeof(WCHAR) );
+        if (!regpath)
+        {
+            push_error(ODBC_ERROR_OUT_OF_MEM, L"Out of memory");
+            return FALSE;
+        }
+        wcscpy(regpath, L"Software\\ODBC\\ODBC.INI\\");
+        wcscat(regpath, lpszDSN);
+
+        /* ONLY removes one DSN, USER or SYSTEM */
+        if (RegOpenKeyW(HKEY_CURRENT_USER, regpath, &hkey) == ERROR_SUCCESS)
+            hkeyroot = HKEY_CURRENT_USER;
+        else
+            hkeyroot = HKEY_LOCAL_MACHINE;
+
+        RegCloseKey(hkey);
+        free(regpath);
+    }
+
+    if (RegOpenKeyW(hkeyroot, L"Software\\ODBC\\ODBC.INI\\ODBC Data Sources", &hkey) == ERROR_SUCCESS)
     {
         RegDeleteValueW(hkey, lpszDSN);
         RegCloseKey(hkey);
     }
 
-    if (RegOpenKeyW(HKEY_LOCAL_MACHINE, L"Software\\ODBC\\ODBC.INI", &hkey) == ERROR_SUCCESS)
+    if (RegOpenKeyW(hkeyroot, L"Software\\ODBC\\ODBC.INI", &hkey) == ERROR_SUCCESS)
     {
         RegDeleteTreeW(hkey, lpszDSN);
         RegCloseKey(hkey);
@@ -1725,7 +1756,7 @@ BOOL WINAPI SQLValidDSNW(LPCWSTR lpszDSN)
     clear_errors();
     TRACE("%s\n", debugstr_w(lpszDSN));
 
-    if (!lpszDSN || lstrlenW(lpszDSN) > SQL_MAX_DSN_LENGTH || wcspbrk(lpszDSN, L"[]{}(),;?*=!@\\"))
+    if (!lpszDSN || !*lpszDSN || lstrlenW(lpszDSN) > SQL_MAX_DSN_LENGTH || wcspbrk(lpszDSN, L"[]{}(),;?*=!@\\"))
     {
         return FALSE;
     }
@@ -1739,7 +1770,7 @@ BOOL WINAPI SQLValidDSN(LPCSTR lpszDSN)
     clear_errors();
     TRACE("%s\n", debugstr_a(lpszDSN));
 
-    if (!lpszDSN || strlen(lpszDSN) > SQL_MAX_DSN_LENGTH || strpbrk(lpszDSN, invalid))
+    if (!lpszDSN || !*lpszDSN || strlen(lpszDSN) > SQL_MAX_DSN_LENGTH || strpbrk(lpszDSN, invalid))
     {
         return FALSE;
     }
@@ -1750,7 +1781,7 @@ BOOL WINAPI SQLValidDSN(LPCSTR lpszDSN)
 BOOL WINAPI SQLWriteDSNToIniW(LPCWSTR lpszDSN, LPCWSTR lpszDriver)
 {
     DWORD ret;
-    HKEY hkey, hkeydriver;
+    HKEY hkey, hkeydriver, hkeyroot = HKEY_CURRENT_USER;
     WCHAR filename[MAX_PATH];
 
     TRACE("%s %s\n", debugstr_w(lpszDSN), debugstr_w(lpszDriver));
@@ -1778,7 +1809,30 @@ BOOL WINAPI SQLWriteDSNToIniW(LPCWSTR lpszDSN, LPCWSTR lpszDriver)
         RegCloseKey(hkey);
     }
 
-    if ((ret = RegCreateKeyW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\ODBC\\ODBC.INI", &hkey)) == ERROR_SUCCESS)
+    if (config_mode == ODBC_SYSTEM_DSN)
+        hkeyroot = HKEY_LOCAL_MACHINE;
+    else if (config_mode == ODBC_BOTH_DSN)
+    {
+        WCHAR *regpath = malloc( (wcslen(L"Software\\ODBC\\ODBC.INI\\") + wcslen(lpszDSN) + 1) * sizeof(WCHAR) );
+        if (!regpath)
+        {
+            push_error(ODBC_ERROR_OUT_OF_MEM, L"Out of memory");
+            return FALSE;
+        }
+        wcscpy(regpath, L"Software\\ODBC\\ODBC.INI\\");
+        wcscat(regpath, lpszDSN);
+
+        /* Check for existing entry */
+        if (RegOpenKeyW(HKEY_LOCAL_MACHINE, regpath, &hkey) == ERROR_SUCCESS)
+            hkeyroot = HKEY_LOCAL_MACHINE;
+        else
+            hkeyroot = HKEY_CURRENT_USER;
+
+        RegCloseKey(hkey);
+        free(regpath);
+    }
+
+    if ((ret = RegCreateKeyW(hkeyroot, L"SOFTWARE\\ODBC\\ODBC.INI", &hkey)) == ERROR_SUCCESS)
     {
         HKEY sources;
 

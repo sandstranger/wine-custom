@@ -45,8 +45,9 @@ extern ULONG_PTR set_icon_param( HICON handle, const struct free_icon_params *pa
 
 /* dce.c */
 extern struct window_surface dummy_surface;
-extern void create_offscreen_window_surface( HWND hwnd, const RECT *surface_rect,
-                                             struct window_surface **surface );
+extern void create_window_surface( HWND hwnd, BOOL create_layered, const RECT *surface_rect, UINT monitor_dpi,
+                                   struct window_surface **window_surface );
+extern struct window_surface *get_driver_window_surface( struct window_surface *surface, UINT monitor_dpi );
 extern void erase_now( HWND hwnd, UINT rdw_flags );
 extern void flush_window_surfaces( BOOL idle );
 extern void move_window_bits( HWND hwnd, const RECT *visible_rect, const RECT *old_visible_rect,
@@ -183,6 +184,8 @@ extern RECT get_virtual_screen_rect( UINT dpi );
 extern BOOL is_exiting_thread( DWORD tid );
 extern POINT map_dpi_point( POINT pt, UINT dpi_from, UINT dpi_to );
 extern RECT map_dpi_rect( RECT rect, UINT dpi_from, UINT dpi_to );
+extern HRGN map_dpi_region( HRGN region, UINT dpi_from, UINT dpi_to );
+extern struct window_rects map_dpi_window_rects( struct window_rects rects, UINT dpi_from, UINT dpi_to );
 extern BOOL message_beep( UINT i );
 extern POINT point_phys_to_win_dpi( HWND hwnd, POINT pt );
 extern POINT point_thread_to_win_dpi( HWND hwnd, POINT pt );
