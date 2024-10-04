@@ -1541,18 +1541,42 @@ HRESULT CDECL wined3d_stateblock_get_ps_consts_b(struct wined3d_stateblock *stat
 void CDECL wined3d_stateblock_set_vertex_declaration(struct wined3d_stateblock *stateblock,
         struct wined3d_vertex_declaration *declaration)
 {
+    struct wined3d_vertex_declaration *prev = stateblock->stateblock_state.vertex_declaration;
+
     TRACE("stateblock %p, declaration %p.\n", stateblock, declaration);
 
     if (declaration)
         wined3d_vertex_declaration_incref(declaration);
-    if (stateblock->stateblock_state.vertex_declaration)
-        wined3d_vertex_declaration_decref(stateblock->stateblock_state.vertex_declaration);
+    if (prev)
+        wined3d_vertex_declaration_decref(prev);
     stateblock->stateblock_state.vertex_declaration = declaration;
     stateblock->changed.vertexDecl = TRUE;
     /* Texture matrices depend on the format of the TEXCOORD attributes. */
     /* FIXME: They also depend on whether the draw is pretransformed,
      * but that should go away. */
     stateblock->changed.texture_matrices = TRUE;
+
+    if (declaration && prev)
+    {
+        if (!stateblock->stateblock_state.vs)
+        {
+            /* Because of settings->texcoords, we have to regenerate the vertex
+             * shader on a vdecl change if there aren't enough varyings to just
+             * always output all the texture coordinates.
+             *
+             * Likewise, we have to invalidate the shader when using per-vertex
+             * colours and diffuse/specular attribute presence changes, or when
+             * normal presence changes. */
+            if (!stateblock->device->adapter->d3d_info.full_ffp_varyings || declaration->diffuse != prev->diffuse
+                    || (stateblock->stateblock_state.rs[WINED3D_RS_COLORVERTEX] && declaration->specular != prev->specular)
+                    || declaration->normal != prev->normal || declaration->point_size != prev->point_size)
+                stateblock->changed.ffp_vs_settings = 1;
+        }
+    }
+    else
+    {
+        stateblock->changed.ffp_vs_settings = 1;
+    }
 }
 
 void CDECL wined3d_stateblock_set_render_state(struct wined3d_stateblock *stateblock,
@@ -1579,13 +1603,13 @@ void CDECL wined3d_stateblock_set_render_state(struct wined3d_stateblock *stateb
             }
             break;
 
-        case WINED3D_RS_SPECULARENABLE:
         case WINED3D_RS_TEXTUREFACTOR:
             stateblock->changed.ffp_ps_constants = 1;
             break;
 
         case WINED3D_RS_VERTEXBLEND:
             stateblock->changed.modelview_matrices = 1;
+            stateblock->changed.ffp_vs_settings = 1;
             break;
 
         case WINED3D_RS_POINTSCALEENABLE:
@@ -1595,12 +1619,28 @@ void CDECL wined3d_stateblock_set_render_state(struct wined3d_stateblock *stateb
             stateblock->changed.point_scale = 1;
             break;
 
+        case WINED3D_RS_AMBIENTMATERIALSOURCE:
+        case WINED3D_RS_COLORVERTEX:
+        case WINED3D_RS_DIFFUSEMATERIALSOURCE:
+        case WINED3D_RS_EMISSIVEMATERIALSOURCE:
+        case WINED3D_RS_FOGENABLE:
+        case WINED3D_RS_FOGTABLEMODE:
+        case WINED3D_RS_FOGVERTEXMODE:
+        case WINED3D_RS_LIGHTING:
+        case WINED3D_RS_LOCALVIEWER:
         case WINED3D_RS_NORMALIZENORMALS:
+        case WINED3D_RS_RANGEFOGENABLE:
+        case WINED3D_RS_SPECULARMATERIALSOURCE:
             stateblock->changed.ffp_vs_settings = 1;
             break;
 
         case WINED3D_RS_COLORKEYENABLE:
             stateblock->changed.ffp_ps_settings = 1;
+            break;
+
+        case WINED3D_RS_SPECULARENABLE:
+            stateblock->changed.ffp_vs_settings = 1;
+            stateblock->changed.ffp_ps_constants = 1;
             break;
 
         default:
@@ -1653,6 +1693,8 @@ void CDECL wined3d_stateblock_set_texture_stage_state(struct wined3d_stateblock 
             break;
 
         case WINED3D_TSS_TEXCOORD_INDEX:
+            stateblock->changed.ffp_vs_settings = 1;
+            /* fall through */
         case WINED3D_TSS_TEXTURE_TRANSFORM_FLAGS:
             stateblock->changed.texture_matrices = 1;
             stateblock->changed.ffp_ps_settings = 1;
@@ -1928,6 +1970,10 @@ HRESULT CDECL wined3d_stateblock_set_light(struct wined3d_stateblock *stateblock
             return WINED3DERR_INVALIDCALL;
     }
 
+    if (!(object = wined3d_light_state_get_light(stateblock->stateblock_state.light_state, light_idx))
+            || light->type != object->OriginalParms.type)
+        stateblock->changed.ffp_vs_settings = 1;
+
     if (SUCCEEDED(hr = wined3d_light_state_set_light(stateblock->stateblock_state.light_state, light_idx, light, &object)))
         set_light_changed(stateblock, object);
     return hr;
@@ -1951,6 +1997,7 @@ HRESULT CDECL wined3d_stateblock_set_light_enable(struct wined3d_stateblock *sta
     if (wined3d_light_state_enable_light(light_state, &stateblock->device->adapter->d3d_info, light_info, enable))
         set_light_changed(stateblock, light_info);
 
+    stateblock->changed.ffp_vs_settings = 1;
     return S_OK;
 }
 
@@ -3428,8 +3475,8 @@ void CDECL wined3d_device_apply_stateblock(struct wined3d_device *device,
                             WINED3D_PUSH_CONSTANTS_VS_FFP, WINED3D_SHADER_CONST_FFP_PROJ,
                             offsetof(struct wined3d_ffp_vs_constants, projection_matrix),
                             sizeof(state->transforms[idx]), &state->transforms[idx]);
-                    /* wined3d_ffp_vs_settings.ortho_fog still needs the
-                     * device state to be set. */
+                    /* wined3d_ffp_vs_settings.ortho_fog and vs_compile_args.ortho_fog
+                     * still need the device state to be set. */
                     wined3d_device_set_transform(device, idx, &state->transforms[idx]);
                 }
             }

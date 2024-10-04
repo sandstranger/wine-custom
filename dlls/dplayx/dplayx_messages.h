@@ -28,6 +28,23 @@
 
 #include "dplay_global.h"
 
+typedef struct
+{
+  DWORD flags;
+  DPID id;
+  DWORD versionOrSystemPlayerId;
+  DPNAME name;
+  DWORD playerDataLength;
+  void *playerData;
+  DWORD spDataLength;
+  void *spData;
+  DWORD playerCount;
+  DPID *playerIds;
+  DPID parentId;
+  DWORD shortcutCount;
+  DPID *shortcutIds;
+} DPPLAYERINFO;
+
 DWORD CreateLobbyMessageReceptionThread( HANDLE hNotifyEvent, HANDLE hStart,
                                          HANDLE hDeath, HANDLE hConnRead );
 
@@ -36,7 +53,8 @@ HRESULT DP_MSG_SendRequestPlayerId( IDirectPlayImpl *This, DWORD dwFlags,
 HRESULT DP_MSG_ForwardPlayerCreation( IDirectPlayImpl *This, DPID dpidServer );
 
 void DP_MSG_ReplyReceived( IDirectPlayImpl *This, WORD wCommandId,
-                           LPCVOID lpMsgBody, DWORD dwMsgBodySize );
+                           LPCVOID lpMsgBody, DWORD dwMsgBodySize,
+                           const void *msgHeader );
 void DP_MSG_ErrorReceived( IDirectPlayImpl *This, WORD wCommandId,
                            LPCVOID lpMsgBody, DWORD dwMsgBodySize );
 void DP_MSG_ToSelf( IDirectPlayImpl *This, DPID dpidSelf );
@@ -49,6 +67,22 @@ void DP_MSG_ToSelf( IDirectPlayImpl *This, DPID dpidSelf );
 
 /* Message types etc. */
 #include "pshpack1.h"
+
+typedef struct
+{
+  DWORD size;
+  DWORD flags;
+  DPID id;
+  DWORD shortNameLength;
+  DWORD longNameLength;
+  DWORD spDataLength;
+  DWORD playerDataLength;
+  DWORD playerCount;
+  DPID systemPlayerId;
+  DWORD fixedSize;
+  DWORD version;
+  DPID parentId;
+} DPLAYI_PACKEDPLAYER;
 
 /* Non provided messages for DPLAY - guess work which may be wrong :( */
 #define DPMSGCMD_ENUMSESSIONSREPLY    1
@@ -71,6 +105,8 @@ void DP_MSG_ToSelf( IDirectPlayImpl *This, DPID dpidSelf );
 #define DPMSGCMD_PLAYERCHAT           22
 
 #define DPMSGCMD_FORWARDADDPLAYERNACK 36
+
+#define DPMSGCMD_SUPERENUMPLAYERSREPLY 41
 
 #define DPMSGCMD_JUSTENVELOPE         1000
 #define DPMSGCMD_JUSTENVELOPEREPLY    1001
@@ -142,9 +178,7 @@ typedef struct tagDPMSG_ENUMSESSIONSREQUEST
 
   GUID  guidApplication;
 
-  DWORD dwPasswordSize; /* A Guess. This is 0x00000000. */
-                        /* This might be the name server DPID which
-                           is needed for the reply */
+  DWORD passwordOffset;
 
   DWORD dwFlags; /* dwFlags from EnumSessions */
 
@@ -186,25 +220,11 @@ typedef struct tagDPMSG_FORWARDADDPLAYER
 {
   DPMSG_SENDENVELOPE envelope;
 
-  DWORD unknown; /* 0 */
-
-  DPID  dpidAppServer; /* Remote application server id */
-  DWORD unknown2[5]; /* 0x0, 0x1c, 0x6c, 0x50, 0x9 */
-
-  DPID  dpidAppServer2; /* Remote application server id again !? */
-  DWORD unknown3[5]; /* 0x0, 0x0, 0x20, 0x0, 0x0 */
-
-  DPID  dpidAppServer3; /* Remote application server id again !? */
-
-  DWORD unknown4[12]; /* ??? - Is this a clump of 5 and then 8? */
-                      /* NOTE: 1 byte in front of the two 0x??090002 entries changes!
-                      *       Is it a timestamp of some sort? 1st always smaller than
-                      *       other...
-                      */
-#define FORWARDADDPLAYER_UNKNOWN4_INIT { 0x30, 0xb, 0x0, 0x1e090002, 0x0, 0x0, 0x0, 0x32090002, 0x0, 0x0, 0x0, 0x0 }
-
-  BYTE unknown5[2]; /* 2 bytes at the end. This may be a part of something! ( 0x0, 0x0) */
-
+  DPID toId;
+  DPID playerId;
+  DPID groupId;
+  DWORD createOffset;
+  DWORD passwordOffset;
 } DPMSG_FORWARDADDPLAYER, *LPDPMSG_FORWARDADDPLAYER;
 typedef const DPMSG_FORWARDADDPLAYER* LPCDPMSG_FORWARDADDPLAYER;
 
@@ -217,6 +237,35 @@ typedef struct tagDPMSG_FORWARDADDPLAYERNACK
   HRESULT errorCode;
 } DPMSG_FORWARDADDPLAYERNACK, *LPDPMSG_FORWARDADDPLAYERNACK;
 typedef const DPMSG_FORWARDADDPLAYERNACK* LPCDPMSG_FORWARDADDPLAYERNACK;
+
+typedef struct
+{
+  DWORD size;
+  DWORD flags;
+  DPID id;
+  DWORD infoMask;
+  DWORD versionOrSystemPlayerId;
+} DPLAYI_SUPERPACKEDPLAYER;
+
+#define DPLAYI_SUPERPACKEDPLAYER_SHORT_NAME_PRESENT              0x001
+#define DPLAYI_SUPERPACKEDPLAYER_LONG_NAME_PRESENT               0x002
+#define DPLAYI_SUPERPACKEDPLAYER_SP_DATA_LENGTH_SIZE( mask )     (((mask) >> 2) & 0x3)
+#define DPLAYI_SUPERPACKEDPLAYER_PLAYER_DATA_LENGTH_SIZE( mask ) (((mask) >> 4) & 0x3)
+#define DPLAYI_SUPERPACKEDPLAYER_PLAYER_COUNT_SIZE( mask )       (((mask) >> 6) & 0x3)
+#define DPLAYI_SUPERPACKEDPLAYER_PARENT_ID_PRESENT               0x100
+#define DPLAYI_SUPERPACKEDPLAYER_SHORTCUT_COUNT_SIZE( mask )     (((mask) >> 9) & 0x3)
+
+typedef struct
+{
+  DPMSG_SENDENVELOPE envelope;
+  DWORD playerCount;
+  DWORD groupCount;
+  DWORD packedOffset;
+  DWORD shortcutCount;
+  DWORD descriptionOffset;
+  DWORD nameOffset;
+  DWORD passwordOffset;
+} DPSP_MSG_SUPERENUMPLAYERSREPLY;
 
 #include "poppack.h"
 

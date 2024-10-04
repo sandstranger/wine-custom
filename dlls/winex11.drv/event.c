@@ -535,7 +535,7 @@ static inline BOOL can_activate_window( HWND hwnd )
     if (style & WS_MINIMIZE) return FALSE;
     if (NtUserGetWindowLongW( hwnd, GWL_EXSTYLE ) & WS_EX_NOACTIVATE) return FALSE;
     if (hwnd == NtUserGetDesktopWindow()) return FALSE;
-    if (NtUserGetWindowRect( hwnd, &rect, get_win_monitor_dpi( hwnd ) ) && IsRectEmpty( &rect )) return FALSE;
+    if (NtUserGetWindowRect( hwnd, &rect, NtUserGetDpiForWindow( hwnd ) ) && IsRectEmpty( &rect )) return FALSE;
     return !(style & WS_DISABLED);
 }
 
@@ -917,7 +917,7 @@ static BOOL X11DRV_Expose( HWND hwnd, XEvent *xev )
 
     release_win_data( data );
 
-    NtUserExposeWindowSurface( hwnd, flags, &rect, get_win_monitor_dpi( hwnd ) );
+    NtUserExposeWindowSurface( hwnd, flags, &rect, NtUserGetWinMonitorDpi( hwnd, MDT_DEFAULT ) );
     return TRUE;
 }
 
@@ -1031,7 +1031,7 @@ static BOOL X11DRV_ConfigureNotify( HWND hwnd, XEvent *xev )
     struct x11drv_win_data *data;
     RECT rect;
     POINT pos;
-    UINT flags, dpi;
+    UINT flags;
     HWND parent;
     BOOL root_coords;
     int cx, cy, x = event->x, y = event->y;
@@ -1053,7 +1053,6 @@ static BOOL X11DRV_ConfigureNotify( HWND hwnd, XEvent *xev )
 
     /* Get geometry */
 
-    dpi = get_win_monitor_dpi( data->hwnd );
     parent = NtUserGetAncestor( hwnd, GA_PARENT );
     root_coords = event->send_event;  /* synthetic events are always in root coords */
 
@@ -1106,7 +1105,7 @@ static BOOL X11DRV_ConfigureNotify( HWND hwnd, XEvent *xev )
                (int)(data->rects.window.bottom - data->rects.window.top), cx, cy );
 
     style = NtUserGetWindowLongW( data->hwnd, GWL_STYLE );
-    if ((style & WS_CAPTION) == WS_CAPTION || !NtUserIsWindowRectFullScreen( &data->rects.visible, dpi ))
+    if ((style & WS_CAPTION) == WS_CAPTION || !data->is_fullscreen)
     {
         read_net_wm_states( event->display, data );
         if ((data->net_wm_state & (1 << NET_WM_STATE_MAXIMIZED)))
@@ -1392,7 +1391,7 @@ void X11DRV_SetFocus( HWND hwnd )
 
 static HWND find_drop_window( HWND hQueryWnd, LPPOINT lpPt )
 {
-    UINT dpi = get_win_monitor_dpi( hQueryWnd );
+    UINT dpi = NtUserGetWinMonitorDpi( hQueryWnd, MDT_DEFAULT );
     RECT tempRect;
 
     if (!NtUserIsWindowEnabled(hQueryWnd)) return 0;
@@ -1791,7 +1790,7 @@ static void handle_xdnd_position_event( HWND hwnd, XClientMessageEvent *event )
 
 static void handle_xdnd_drop_event( HWND hwnd, XClientMessageEvent *event )
 {
-    struct dnd_drop_event_params params = {.dispatch.callback = dnd_leave_event_callback, .hwnd = HandleToULong(hwnd)};
+    struct dnd_drop_event_params params = {.dispatch.callback = dnd_drop_event_callback, .hwnd = HandleToULong(hwnd)};
     XClientMessageEvent e;
     void *ret_ptr;
     ULONG ret_len;

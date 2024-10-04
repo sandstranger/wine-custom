@@ -46,15 +46,6 @@ static CFMutableDictionaryRef win_datas;
 static unsigned int activate_on_focus_time;
 
 
-/**********************************************************************
- *       get_win_monitor_dpi
- */
-static UINT get_win_monitor_dpi(HWND hwnd)
-{
-    return NtUserGetSystemDpiForProcess(NULL);  /* FIXME: get monitor dpi */
-}
-
-
 /* per-monitor DPI aware NtUserSetWindowPos call */
 static BOOL set_window_pos(HWND hwnd, HWND after, INT x, INT y, INT cx, INT cy, UINT flags)
 {
@@ -364,7 +355,7 @@ static void sync_window_min_max_info(HWND hwnd)
 {
     LONG style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
     LONG exstyle = NtUserGetWindowLongW(hwnd, GWL_EXSTYLE);
-    UINT dpi = get_win_monitor_dpi(hwnd);
+    UINT dpi = NtUserGetWinMonitorDpi(hwnd, MDT_DEFAULT);
     RECT win_rect, primary_monitor_rect;
     MINMAXINFO minmax;
     LONG adjustedStyle;
@@ -378,7 +369,7 @@ static void sync_window_min_max_info(HWND hwnd)
 
     if (!macdrv_get_cocoa_window(hwnd, FALSE)) return;
 
-    NtUserGetWindowRect(hwnd, &win_rect, get_win_monitor_dpi(hwnd));
+    NtUserGetWindowRect(hwnd, &win_rect, dpi);
     minmax.ptReserved.x = win_rect.left;
     minmax.ptReserved.y = win_rect.top;
 
@@ -1023,53 +1014,6 @@ static void sync_window_position(struct macdrv_win_data *data, UINT swp_flags, c
 }
 
 
-/***********************************************************************
- *              move_window_bits
- *
- * Move the window bits when a window is moved.
- */
-static void move_window_bits(HWND hwnd, macdrv_window window, const RECT *old_rect, const RECT *new_rect,
-                             const RECT *old_client_rect, const RECT *new_client_rect,
-                             const RECT *new_window_rect)
-{
-    RECT src_rect = *old_rect;
-    RECT dst_rect = *new_rect;
-    HDC hdc_src, hdc_dst;
-    HRGN rgn;
-    HWND parent = 0;
-
-    if (!window)
-    {
-        OffsetRect(&dst_rect, -new_window_rect->left, -new_window_rect->top);
-        parent = NtUserGetAncestor(hwnd, GA_PARENT);
-        hdc_src = NtUserGetDCEx(parent, 0, DCX_CACHE);
-        hdc_dst = NtUserGetDCEx(hwnd, 0, DCX_CACHE | DCX_WINDOW);
-    }
-    else
-    {
-        OffsetRect(&dst_rect, -new_client_rect->left, -new_client_rect->top);
-        /* make src rect relative to the old position of the window */
-        OffsetRect(&src_rect, -old_client_rect->left, -old_client_rect->top);
-        if (dst_rect.left == src_rect.left && dst_rect.top == src_rect.top) return;
-        hdc_src = hdc_dst = NtUserGetDCEx(hwnd, 0, DCX_CACHE);
-    }
-
-    rgn = NtGdiCreateRectRgn(dst_rect.left, dst_rect.top, dst_rect.right, dst_rect.bottom);
-    NtGdiExtSelectClipRgn(hdc_dst, rgn, RGN_COPY);
-    NtGdiDeleteObjectApp(rgn);
-    NtUserExcludeUpdateRgn(hdc_dst, hwnd);
-
-    TRACE("copying bits for win %p/%p %s -> %s\n", hwnd, window,
-          wine_dbgstr_rect(&src_rect), wine_dbgstr_rect(&dst_rect));
-    NtGdiBitBlt(hdc_dst, dst_rect.left, dst_rect.top,
-                dst_rect.right - dst_rect.left, dst_rect.bottom - dst_rect.top,
-                hdc_src, src_rect.left, src_rect.top, SRCCOPY, 0, 0);
-
-    NtUserReleaseDC(hwnd, hdc_dst);
-    if (hdc_src != hdc_dst) NtUserReleaseDC(parent, hdc_src);
-}
-
-
 /**********************************************************************
  *              activate_on_following_focus
  */
@@ -1143,7 +1087,7 @@ static HMONITOR monitor_from_point(POINT pt, UINT flags)
  */
 static LRESULT move_window(HWND hwnd, WPARAM wparam)
 {
-    UINT dpi = get_win_monitor_dpi(hwnd);
+    UINT dpi = NtUserGetWinMonitorDpi(hwnd, MDT_DEFAULT);
     MSG msg;
     RECT origRect, movedRect, desktopRect;
     int hittest = (int)(wparam & 0x0f);
@@ -1170,7 +1114,7 @@ static LRESULT move_window(HWND hwnd, WPARAM wparam)
     else
         captionHeight = 0;
 
-    NtUserGetWindowRect(hwnd, &origRect, get_win_monitor_dpi(hwnd));
+    NtUserGetWindowRect(hwnd, &origRect, NtUserGetWinMonitorDpi(hwnd, MDT_DEFAULT));
     movedRect = origRect;
 
     if (!hittest)
@@ -1761,35 +1705,6 @@ BOOL macdrv_WindowPosChanging(HWND hwnd, UINT swp_flags, BOOL shaped, const stru
     return ret;
 }
 
-/***********************************************************************
- *              MoveWindowBits   (MACDRV.@)
- */
-void macdrv_MoveWindowBits(HWND hwnd, const struct window_rects *new_rects, const RECT *valid_rects)
-{
-    RECT old_visible_rect, old_client_rect;
-    struct macdrv_win_data *data;
-    macdrv_window window;
-
-    if (!(data = get_win_data(hwnd))) return;
-    old_visible_rect = data->rects.visible;
-    old_client_rect = data->rects.client;
-    window = data->cocoa_window;
-    release_win_data(data);
-
-    /* if all that happened is that the whole window moved, copy everything */
-    if (EqualRect(&valid_rects[0], &new_rects->visible) && EqualRect(&valid_rects[1], &old_visible_rect))
-    {
-        /* A Cocoa window's bits are moved automatically */
-        if (!window && (valid_rects[0].left - valid_rects[1].left || valid_rects[0].top - valid_rects[1].top))
-            move_window_bits(hwnd, 0, &old_visible_rect, &new_rects->visible,
-                             &old_client_rect, &new_rects->client, &new_rects->window);
-    }
-    else
-    {
-        move_window_bits(hwnd, window, &valid_rects[1], &valid_rects[0],
-                         &old_client_rect, &new_rects->client, &new_rects->window);
-    }
-}
 
 /***********************************************************************
  *      GetWindowStyleMasks   (X11DRV.@)
@@ -1817,8 +1732,8 @@ BOOL macdrv_GetWindowStyleMasks(HWND hwnd, UINT style, UINT ex_style, UINT *styl
 /***********************************************************************
  *              WindowPosChanged   (MACDRV.@)
  */
-void macdrv_WindowPosChanged(HWND hwnd, HWND insert_after, UINT swp_flags, const struct window_rects *new_rects,
-                             struct window_surface *surface)
+void macdrv_WindowPosChanged(HWND hwnd, HWND insert_after, UINT swp_flags, BOOL fullscreen,
+                             const struct window_rects *new_rects, struct window_surface *surface)
 {
     struct macdrv_thread_data *thread_data;
     struct macdrv_win_data *data;
