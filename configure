@@ -5571,7 +5571,7 @@ if test $ac_test_CFLAGS; then
   CFLAGS=$ac_save_CFLAGS
 elif test $ac_cv_prog_cc_g = yes; then
   if test "$GCC" = yes; then
-    CFLAGS="-Os"
+    CFLAGS="-O2"
   else
     CFLAGS="-g"
   fi
@@ -6008,7 +6008,7 @@ if test $ac_test_CXXFLAGS; then
   CXXFLAGS=$ac_save_CXXFLAGS
 elif test $ac_cv_prog_cxx_g = yes; then
   if test "$GXX" = yes; then
-    CXXFLAGS="-Os"
+    CXXFLAGS="-O2"
   else
     CXXFLAGS="-g"
   fi
@@ -9493,7 +9493,7 @@ if test $ac_test_OBJCFLAGS; then
   OBJCFLAGS=$ac_save_OBJCFLAGS
 elif test $ac_cv_prog_objc_g = yes; then
   if test "$GOBJC" = yes; then
-    OBJCFLAGS="-Os"
+    OBJCFLAGS="-O2"
   else
     OBJCFLAGS="-g"
   fi
@@ -10288,7 +10288,7 @@ test -n "$x86_64_CC" || x86_64_CC="false"
         esac
 fi
 
-    CFLAGS=${CROSSCFLAGS:-"-Os"}
+    CFLAGS=${CROSSCFLAGS:-"-O2"}
     CPPFLAGS=""
     LDFLAGS=$CROSSLDFLAGS
     eval CC=\$${wine_arch}_CC
