@@ -50,13 +50,14 @@ DWORD CreateLobbyMessageReceptionThread( HANDLE hNotifyEvent, HANDLE hStart,
 
 HRESULT DP_MSG_SendRequestPlayerId( IDirectPlayImpl *This, DWORD dwFlags,
                                     LPDPID lpdipidAllocatedId );
-HRESULT DP_MSG_ForwardPlayerCreation( IDirectPlayImpl *This, DPID dpidServer );
+HRESULT DP_MSG_ReadPackedPlayer( char *data, DWORD *offset, DWORD maxSize,
+                                 DPPLAYERINFO *playerInfo );
+HRESULT DP_MSG_ForwardPlayerCreation( IDirectPlayImpl *This, DPID dpidServer, WCHAR *password );
+HRESULT DP_MSG_SendAddForwardAck( IDirectPlayImpl *This, DPID id );
 
 void DP_MSG_ReplyReceived( IDirectPlayImpl *This, WORD wCommandId,
                            LPCVOID lpMsgBody, DWORD dwMsgBodySize,
                            const void *msgHeader );
-void DP_MSG_ErrorReceived( IDirectPlayImpl *This, WORD wCommandId,
-                           LPCVOID lpMsgBody, DWORD dwMsgBodySize );
 void DP_MSG_ToSelf( IDirectPlayImpl *This, DPID dpidSelf );
 
 /* Timings -> 1000 ticks/sec */
@@ -107,6 +108,9 @@ typedef struct
 #define DPMSGCMD_FORWARDADDPLAYERNACK 36
 
 #define DPMSGCMD_SUPERENUMPLAYERSREPLY 41
+
+#define DPMSGCMD_ADDFORWARD           46
+#define DPMSGCMD_ADDFORWARDACK        47
 
 #define DPMSGCMD_JUSTENVELOPE         1000
 #define DPMSGCMD_JUSTENVELOPEREPLY    1001
@@ -209,10 +213,10 @@ typedef struct tagDPMSG_NEWPLAYERIDREPLY
 
   DPID dpidNewPlayerId;
 
-  /* Assume that this is data that is tacked on to the end of the message
-   * that comes from the SP remote data stored that needs to be propagated.
-   */
-  BYTE unknown[36];     /* This appears to always be 0 - not sure though */
+  DPSECURITYDESC secDesc;
+  DWORD sspiProviderOffset;
+  DWORD capiProviderOffset;
+  HRESULT result;
 } DPMSG_NEWPLAYERIDREPLY, *LPDPMSG_NEWPLAYERIDREPLY;
 typedef const DPMSG_NEWPLAYERIDREPLY* LPCDPMSG_NEWPLAYERIDREPLY;
 
@@ -258,6 +262,12 @@ typedef struct
 typedef struct
 {
   DPMSG_SENDENVELOPE envelope;
+  HRESULT error;
+} DPSP_MSG_ADDFORWARDREPLY;
+
+typedef struct
+{
+  DPMSG_SENDENVELOPE envelope;
   DWORD playerCount;
   DWORD groupCount;
   DWORD packedOffset;
@@ -266,6 +276,22 @@ typedef struct
   DWORD nameOffset;
   DWORD passwordOffset;
 } DPSP_MSG_SUPERENUMPLAYERSREPLY;
+
+typedef struct
+{
+  DPMSG_SENDENVELOPE envelope;
+  DPID toId;
+  DPID playerId;
+  DPID groupId;
+  DWORD createOffset;
+  DWORD passwordOffset;
+} DPSP_MSG_ADDFORWARD;
+
+typedef struct
+{
+  DPMSG_SENDENVELOPE envelope;
+  DPID id;
+} DPSP_MSG_ADDFORWARDACK;
 
 #include "poppack.h"
 

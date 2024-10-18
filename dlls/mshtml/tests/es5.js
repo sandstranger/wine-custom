@@ -473,7 +473,18 @@ sync_test("array_sort", function() {
 });
 
 sync_test("identifier_keywords", function() {
+    function get(let, set) { { get instanceof (Object); } return let + set; }
+    { get /* asdf */: 10 }
+    let /* block label */ : {
+        break let;
+        ok(false, "did not break out of 'let' labelled block statement");
+    }
+    set: var let = get(1, 2);
+    var set = 1234;
     var o = {
+        get: get,
+        set: set,
+        let /* comment */  :  let,
         if: 1,
         default: 2,
         function: 3,
@@ -486,8 +497,8 @@ sync_test("identifier_keywords", function() {
         else: true,
         finally: true,
         for: true,
-        in: true,
-        instanceof: true,
+        set in(x) { },
+        get instanceof() { return 3; },
         new: true,
         return: true,
         switch: true,
@@ -508,6 +519,21 @@ sync_test("identifier_keywords", function() {
     ok(o.if === 1, "o.if = " + o.if);
     ok(ro().default === 2, "ro().default = " + ro().default);
     ok(o.false === true, "o.false = " + o.false);
+    ok(o.get === get, "o.get = " + o.get);
+    ok(o.set === set, "o.set = " + o.set);
+    ok(o.let === let, "o.let = " + o.let);
+    ok(o.instanceof === 3, "o.instanceof = " + o.instanceof);
+    ok(let === 3, "let = " + let);
+    ok(set === 1234, "set = " + set);
+
+    var tmp = false;
+    try {
+        eval('function var() { }');
+    }
+    catch(set) {
+        tmp = true;
+    }
+    ok(tmp === true, "Expected exception for 'function var() { }'");
 });
 
 function test_own_data_prop_desc(obj, prop, expected_writable, expected_enumerable,

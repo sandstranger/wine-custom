@@ -3017,7 +3017,7 @@ HRESULT WINAPI D3DXSHProjectCubeMap(unsigned int order, IDirect3DCubeTexture9 *t
     }
 
     format = get_format_info(desc.Format);
-    if (format->type != FORMAT_ARGB && format->type != FORMAT_ARGBF16 && format->type != FORMAT_ARGBF)
+    if (is_unknown_format(format) || is_index_format(format) || is_compressed_format(format))
     {
         FIXME("Unsupported texture format %#x.\n", desc.Format);
         return D3DERR_INVALIDCALL;
@@ -3093,7 +3093,7 @@ HRESULT WINAPI D3DXSHProjectCubeMap(unsigned int order, IDirect3DCubeTexture9 *t
                 D3DXVec3Normalize(&dir, &dir);
                 D3DXSHEvalDirection(temp, order, &dir);
 
-                format_to_d3dx_color(format, &row[x * format->block_byte_count], &colour);
+                format_to_d3dx_color(format, &row[x * format->block_byte_count], NULL, &colour);
 
                 for (i = 0; i < order_square; ++i)
                 {

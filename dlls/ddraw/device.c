@@ -562,24 +562,33 @@ static HRESULT WINAPI d3d_device1_GetCaps(IDirect3DDevice *iface,
 static HRESULT WINAPI d3d_device2_SwapTextureHandles(IDirect3DDevice2 *iface,
         IDirect3DTexture2 *tex1, IDirect3DTexture2 *tex2)
 {
-    struct d3d_device *device = impl_from_IDirect3DDevice2(iface);
     struct ddraw_surface *surf1 = unsafe_impl_from_IDirect3DTexture2(tex1);
     struct ddraw_surface *surf2 = unsafe_impl_from_IDirect3DTexture2(tex2);
-    DWORD h1, h2;
+    DWORD h1, h2, h;
+    HRESULT hr;
 
     TRACE("iface %p, tex1 %p, tex2 %p.\n", iface, tex1, tex2);
+
+    if (!surf1->Handle || !surf2->Handle)
+        return E_INVALIDARG;
+
+    if (FAILED(hr = IDirect3DDevice2_GetRenderState(iface, D3DRENDERSTATE_TEXTUREHANDLE, &h)))
+        return hr;
 
     wined3d_mutex_lock();
 
     h1 = surf1->Handle - 1;
     h2 = surf2->Handle - 1;
-    device->handle_table.entries[h1].object = surf2;
-    device->handle_table.entries[h2].object = surf1;
+    global_handle_table.entries[h1].object = surf2;
+    global_handle_table.entries[h2].object = surf1;
     surf2->Handle = h1 + 1;
     surf1->Handle = h2 + 1;
 
     wined3d_mutex_unlock();
 
+    if ((h == surf1->Handle || h == surf2->Handle)
+            && FAILED(hr = IDirect3DDevice2_SetRenderState(iface, D3DRENDERSTATE_TEXTUREHANDLE, h)))
+        return hr;
     return D3D_OK;
 }
 
@@ -5173,7 +5182,7 @@ static HRESULT d3d_device7_Clear(IDirect3DDevice7 *iface, DWORD count,
     }
 
     wined3d_mutex_lock();
-    wined3d_device_apply_stateblock(device->wined3d_device, device->state);
+    wined3d_stateblock_apply_clear_state(device->state, device->wined3d_device);
     d3d_device_sync_rendertarget(device);
     hr = wined3d_device_clear(device->wined3d_device, count, (RECT *)rects, flags, &c, z, stencil);
     wined3d_mutex_unlock();

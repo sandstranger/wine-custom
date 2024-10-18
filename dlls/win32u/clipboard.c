@@ -754,3 +754,68 @@ HANDLE WINAPI NtUserGetClipboardData( UINT format, struct get_clipboard_params *
         return 0;
     }
 }
+
+LRESULT drag_drop_call( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, void *data )
+{
+    void *ret_ptr;
+    ULONG ret_len;
+
+    TRACE( "hwnd %p, msg %#x, wparam %#zx, lparam %#lx, data %p\n", hwnd, msg, wparam, lparam, data );
+
+    switch (msg)
+    {
+    case WINE_DRAG_DROP_ENTER:
+        return KeUserModeCallback( NtUserDragDropEnter, (struct format_entry *)lparam, wparam, &ret_ptr, &ret_len );
+    case WINE_DRAG_DROP_LEAVE:
+        return KeUserModeCallback( NtUserDragDropLeave, 0, 0, &ret_ptr, &ret_len );
+    case WINE_DRAG_DROP_DRAG:
+    {
+        struct drag_drop_drag_params params =
+        {
+            .hwnd = hwnd,
+            .point.x = LOWORD(wparam),
+            .point.y = HIWORD(wparam),
+            .effect = lparam,
+        };
+        UINT raw_dpi;
+
+        params.point = map_dpi_point( params.point, get_win_monitor_dpi( hwnd, &raw_dpi ), get_thread_dpi() );
+        if (KeUserModeCallback( NtUserDragDropDrag, &params, sizeof(params), &ret_ptr, &ret_len ) || ret_len != sizeof(DWORD))
+            return DROPEFFECT_NONE;
+        return *(DWORD *)ret_ptr;
+    }
+    case WINE_DRAG_DROP_DROP:
+    {
+        struct drag_drop_drop_params params = {.hwnd = hwnd};
+        if (KeUserModeCallback( NtUserDragDropDrop, &params, sizeof(params), &ret_ptr, &ret_len ) || ret_len != sizeof(DWORD))
+            return DROPEFFECT_NONE;
+        return *(DWORD *)ret_ptr;
+    }
+
+    case WINE_DRAG_DROP_POST:
+    {
+        struct drag_drop_post_params *params;
+        const DROPFILES *drop = (DROPFILES *)lparam;
+        UINT drop_size = wparam, size;
+        NTSTATUS status;
+        UINT raw_dpi;
+
+        size = offsetof(struct drag_drop_post_params, drop) + drop_size;
+        if (!(params = malloc( size ))) return STATUS_NO_MEMORY;
+        params->hwnd = hwnd;
+        params->drop_size = drop_size;
+        memcpy( &params->drop, drop, drop_size );
+
+        params->drop.pt = map_dpi_point( params->drop.pt, get_win_monitor_dpi( hwnd, &raw_dpi ), get_thread_dpi() );
+        status = KeUserModeCallback( NtUserDragDropPost, params, size, &ret_ptr, &ret_len );
+        free( params );
+        return status;
+    }
+
+    default:
+        FIXME( "Unknown NtUserDragDropCall msg %#x\n", msg );
+        break;
+    }
+
+    return -1;
+}
